@@ -1,0 +1,9 @@
+# Mount the exact Claude Code release already cached on the training host.
+# Harbor's installer detects the requested version and skips its download.
+services:
+  main:
+    volumes:
+      - type: bind
+        source: ${LH_CLAUDE_OFFLINE_BINARY}
+        target: /usr/local/bin/claude
+        read_only: true

@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+node_modules/
+
+# Vite builds the Web bundle into the package. It is never committed; the
+# release workflow builds it before packaging.
+src/lh_harness/_frontend/
+
+# package-lock.json is the authority used by CI; bun may be used locally but
+# its lockfile is not committed so the two cannot drift.
+bun.lock
+bun.lockb
+
+# Local run outputs
+.lh-harness/
+runs/
+logs/
+results/
+tmp/
+
+# Secrets and local overrides
+.env
+*.env
+env.local.sh
+*.local.sh
+*.mcp.json
+
+# Editor/system
+.DS_Store
+.idea/
+.vscode/
+.lh-harness-quickstart/
+
+# Skill learning and benchmark run artifacts
+output/
+*.log
+
+# 训练数据集
+train_dataset/
+
+# Terminal-Bench 评估数据集
+eval/TB-harness/datasets/
+
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 环境变量及密钥
+.env
+.env.*
+# Local files
+/output/
+/train_dataset/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.log
+.env
+.env.*

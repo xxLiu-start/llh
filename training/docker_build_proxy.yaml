@@ -1,0 +1,11 @@
+# Build-only proxy for the GitHub-dependent jq task. The training driver binds
+# this proxy to Docker's local bridge while Harbor runs. Runtime networking and
+# the original task Dockerfile remain unchanged.
+services:
+  main:
+    build:
+      args:
+        HTTP_PROXY: ${LH_DOCKER_BUILD_PROXY:-}
+        HTTPS_PROXY: ${LH_DOCKER_BUILD_PROXY:-}
+        http_proxy: ${LH_DOCKER_BUILD_PROXY:-}
+        https_proxy: ${LH_DOCKER_BUILD_PROXY:-}
