@@ -16,6 +16,7 @@ from .eval_terminal_bench_pro_original import (
 )
 from .skill_learning import SkillBank
 from .train_terminal_bench_pro import _find_cached_claude_binary
+from .verifier_uv import add_verifier_uv, scoped_verifier_uv_host_env
 
 
 def _freeze_bank(source: Path, output_root: Path, dataset: Path) -> Path:
@@ -75,6 +76,7 @@ def _write_eval_config(
     kwargs["skill_bank_path"] = str(frozen_bank)
     kwargs["learning_enabled"] = False
     kwargs.pop("candidate_path", None)
+    add_verifier_uv(config, dataset=dataset, task=task)
     config_path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return config, output_root / "jobs" / task / config["job_name"]
 
@@ -153,10 +155,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"Fresh dual-SkillBank evaluation: {task} ({run_id})", file=sys.stderr, flush=True)
         try:
-            exit_code, trial, trial_path, job_summary = _run_harbor(
-                config_path, job_dir, any(Path(path).name == "docker_build_proxy.yaml"
-                                          for path in config.get("environment", {}).get("extra_docker_compose", [])),
-            )
+            with scoped_verifier_uv_host_env(config):
+                exit_code, trial, trial_path, job_summary = _run_harbor(
+                    config_path, job_dir, any(Path(path).name == "docker_build_proxy.yaml"
+                                              for path in config.get("environment", {}).get("extra_docker_compose", [])),
+                )
             record = result_record(task, run_id, trial, trial_path, config_path=config_path,
                                    harbor_exit_code=exit_code, job_result=job_summary)
         except Exception as exc:

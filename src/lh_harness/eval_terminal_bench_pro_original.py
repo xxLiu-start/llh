@@ -15,6 +15,8 @@ from typing import Any
 
 from .docker_build_proxy import docker_build_proxy
 from .harbor_url import claude_code_upstream_base_url
+from .claude_cache import find_cached_claude_binary
+from .verifier_uv import add_verifier_uv, scoped_verifier_uv_host_env
 
 
 def discover_tasks(root: Path) -> list[str]:
@@ -72,6 +74,7 @@ def _write_config(
         compose = Path(__file__).resolve().parents[2] / "training" / "docker_build_proxy.yaml"
         config.setdefault("environment", {}).setdefault("extra_docker_compose", []).append(str(compose))
 
+    add_verifier_uv(config, dataset=dataset, task=task)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     import yaml
 
@@ -282,6 +285,13 @@ def _run_harbor(
     config_path: Path, job_dir: Path, use_build_proxy: bool,
 ) -> tuple[int, dict[str, Any] | None, Path | None, dict[str, Any] | None]:
     harbor_env = os.environ.copy()
+    # Harbor imports the original adapter in a child process. A direct
+    # `python -m` launch may only have this package on PYTHONPATH, leaving
+    # the original Harness's `harbor_agent` module invisible to Harbor.
+    repo = Path(__file__).resolve().parents[2]
+    required = (str(repo / "src"), str(repo / "eval" / "TB-harness" / "Harness" / "src"))
+    inherited = [part for part in harbor_env.get("PYTHONPATH", "").split(os.pathsep) if part and part not in required]
+    harbor_env["PYTHONPATH"] = os.pathsep.join((*required, *inherited))
     if harbor_env.get("ANTHROPIC_BASE_URL"):
         harbor_env["ANTHROPIC_BASE_URL"] = claude_code_upstream_base_url(harbor_env["ANTHROPIC_BASE_URL"])
     with docker_build_proxy() if use_build_proxy else contextlib.nullcontext(None) as build_proxy:
@@ -331,10 +341,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if not os.getenv("LH_CLAUDE_OFFLINE_BINARY"):
         version = os.getenv("CLAUDE_CODE_VERSION", "2.1.176")
-        cached = Path("output/terminal-bench-pro/jobs/claude_code_cache") / version / "claude"
-        if cached.is_file() and os.access(cached, os.X_OK):
-            os.environ["LH_CLAUDE_OFFLINE_BINARY"] = str(cached.resolve())
+        cached = find_cached_claude_binary(output_root, version)
+        if cached is not None:
+            os.environ["LH_CLAUDE_OFFLINE_BINARY"] = str(cached)
             print(f"Offline Claude Code: {cached}", file=sys.stderr, flush=True)
+        else:
+            parser.error(
+                f"Claude Code {version} is not cached locally; set LH_CLAUDE_OFFLINE_BINARY "
+                "to a matching executable before running this offline evaluation"
+            )
 
     failures = 0
     for task in selected:
@@ -363,10 +378,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr, flush=True,
         )
         try:
-            exit_code, trial, trial_path, job_summary = _run_harbor(
-                config_path, job_dir,
-                any(Path(path).name == "docker_build_proxy.yaml" for path in config.get("environment", {}).get("extra_docker_compose", [])),
-            )
+            with scoped_verifier_uv_host_env(config):
+                exit_code, trial, trial_path, job_summary = _run_harbor(
+                    config_path, job_dir,
+                    any(Path(path).name == "docker_build_proxy.yaml" for path in config.get("environment", {}).get("extra_docker_compose", [])),
+                )
             record = result_record(
                 task, run_id, trial, trial_path, config_path=config_path,
                 harbor_exit_code=exit_code, job_result=job_summary,

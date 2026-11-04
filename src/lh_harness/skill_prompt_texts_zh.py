@@ -115,7 +115,7 @@ B. CREATE_NEW_SKILL：没有候选覆盖已证实的可复用失败机制，且 
 C. REVISE_SKILL：已有 Skill 覆盖同一能力且实际注入，但它的 input_use、output_spec、guidance 或 avoid 存在具体错误或遗漏，必须替换这个旧版本。
 D. NO_CHANGE：角色未遵循提示、Harness 协议、工具/环境/运行时、取消或其他非 Skill 原因更能解释失败。
 E. INSUFFICIENT_EVIDENCE：证据不足以可靠地区分原因。
-不得同时修改 Router 和 Skill；任务未完成本身不证明 Skill 有问题。引用具体轮次、Prompt、Executor、Auditor 和报告字段。
+有独立证据时可同时规划 Router 和 Skill 更新；任务未完成本身不证明 Skill 有问题。引用具体轮次、Prompt、Executor、Auditor 和报告字段。
 CREATE_NEW_SKILL 可指出多个有独立证据支持的缺失机制，Builder 可分别为其生成 Skill。
 若同时发现独立的能力缺口和已注入旧 Skill 的具体缺陷，主动作选 CREATE_NEW_SKILL，并在 revision_targets 中逐项列出需要修订的旧 Skill、独立失败机制和证据引用。不要因为新建 Skill 而忽略旧 Skill 的错误。逐项检查 injected_skill_guidance；仅当旧 Skill 实际注入且内容缺陷有轨迹证据时才提出修订。没有这种缺陷时返回空数组。Router 错误不能伪装成 Skill 缺陷。
 可以引用 trajectory_index 中真实存在的任意 round_id，即使该轮尚未出现在首批详细摘录中；程序会在构建候选前按引用补取对应轮次的轨迹摘录。evidence_refs 中轮次证据写成 round_001 或 round_001:executor_output；最终报告和路由证据可写成 final_report:字段名 或 router_inputs_and_outputs:详情。最多引用 8 个不同轮次；CREATE_NEW_SKILL 至少引用一个真实轮次；不得编造轮次或证据区段。
@@ -189,11 +189,11 @@ SKILL_BUILDER_PROMPT_ZH = CHINESE_PROMPT + """系统指令：
 
 三、创建与修订
 
-CREATE_NEW_SKILL：用于 SkillBank 未覆盖的独立机制。每个独立机制可生成一个 Skill，Builder 用 skills 数组输出。通过结构、证据和预算检查后，新 Skill 以 provisional 状态写入临时 SkillBank。本次输出的所有候选在同一次来源任务重跑中验证，整组候选都须在该任务中被实际选中并注入，再比较 reward；只有整组验证通过才移入常态 SkillBank。未通过时保留在临时库，不得称为 validated。修订旧 Skill 同样需要重跑验证。
+CREATE_NEW_SKILL：用于 SkillBank 未覆盖的独立机制。每个独立机制可生成一个 Skill，Builder 用 skills 数组输出。通过结构、证据和预算检查后，新 Skill 以 provisional 状态写入临时 SkillBank。来源任务的组合重跑只提供组合层面的观察，不证明每个候选的独立贡献；未独立验证的 Skill 保留 provisional，不得称为 validated。修订旧 Skill 同样需要独立验证。
 
 REVISE_SKILL：仅用于已有 Skill 已被实际注入，且其指导存在证据支持的缺陷。保留 skill_id 和 category_id，version 加一，version_parent 指向旧版本。不得用修订 Skill 掩盖 Router 选择错误或环境故障。
 修订前先逐项盘点旧版三个角色在 input_use、output_spec、guidance、avoid，以及触发、排除和路由描述中仍有用的通用能力。仅纠正有证据支持的缺陷；可将旧版中的单题路径、数值、文件名、工具命令和特定示例抽象成适用条件、可验证步骤或示例类别，但必须保留它们所承载的通用功能。旧版正确的输入使用、最小充分交接、验收证据、恢复策略和适用边界不得删除、弱化或改成模糊口号。若 Token 预算容不下必要能力，应拒绝修订，不得靠删除旧功能通过预算检查。
-单独 REVISE_SKILL 时 skills 数组必须恰好包含一个修订候选。CREATE_NEW_SKILL 且 revision_requests 非空时，skills 数组同时包含独立的新 Skill 和每个指定旧 Skill 的一个修订版本；不要用新 Skill 代替旧 Skill 修订。整组只重跑一次。
+单独 REVISE_SKILL 时 skills 数组必须恰好包含一个修订候选。CREATE_NEW_SKILL 且 revision_requests 非空时，skills 数组同时包含独立的新 Skill 和每个指定旧 Skill 的一个修订版本；不要用新 Skill 代替旧 Skill 修订。组合结果不可平均分配因果贡献。
 
 四、三个角色与最小充分交接
 
@@ -280,3 +280,66 @@ REVISION_PRESERVATION_REVIEW_PROMPT_ZH = CHINESE_PROMPT + """系统指令：
 严格输出一个 JSON 对象：
 {"preserves_reusable":true,"task_specific_generalized":true,"checks":[{"field":"roles.manager.guidance","preserved":true,"generalized":true,"reason":"指出旧功能在新候选中的保留位置，以及单题细节的泛化方式"}],"reason":"总评"}
 checks 必须恰好覆盖输入中的 changed_fields；所有布尔值必须是真正的 JSON 布尔值。"""
+
+EVOLUTION_PLANNER_PROMPT_ZH = CHINESE_PROMPT + """系统指令：
+根据已提取经验、精简轨迹与实际路由记录，规划证据驱动的 Skill 进化。
+总结已完成的成功任务，也诊断一次失败任务中的成功局部策略和错误模式。
+只输出 JSON，包含独立数组 create_skills、revise_skills、update_router、no_update_reasons。
+每项必须引用真实 round_id 或路由记录；Skill 项至少引用一个真实轮次。每个数组可有多项，也可为空。
+不要直接写完整 Skill。失败任务中也要保留已经成功的局部策略。
+只有现有 Skill 未覆盖的独立通用机制才新增；同一机制增加能力则修订旧 Skill。
+修订计划须列出待保留的旧能力、待增加能力和有证据的缺陷。
+路由修复必须有已存在、可选择 Skill 的真实选错或遗漏记录；尚未创建的新 Skill 不算遗漏。
+三个分支可同时提出。选中 Skill 或任务成功均非因果贡献证明。结构：
+{"create_skills":[{"mechanism":"","why_new":"","general_strategy":"","triggers":[],"exclusions":[],"role_guidance":{"manager":"","executor":"","auditor":""},"evidence_refs":[],"expected_improvement":""}],
+"revise_skills":[{"target_skill_id":"","revision_reason":"","preserve_capabilities":[],"add_capabilities":[],"fix_defects":[{"field":"roles.executor.guidance","old_text":"旧版错误原句","replacement_text":"修正后行为","reason":"为何错误","evidence_refs":[]}],"evidence_refs":[]}],
+"update_router":[{"router_error_type":"omission|wrong_skill|conflict","affected_skill_ids":[],"observed_error":"","repair_instruction":"","preserve_rules":[],"evidence_refs":[],"depends_on_skill_ids":[]}],"no_update_reasons":[]}"""
+
+CREATE_SKILL_BUILDER_PROMPT_ZH = CHINESE_PROMPT + """系统指令：
+仅根据当前计划项和所引轨迹摘录生成一个可复用的新 Skill。证据不足时返回
+{"rejected_reason":"原因"}，否则严格按下列 JSON 结构返回。不要用 mechanism、role_views、
+tri_role_view 或 manager_view 等别名代替 problem_mechanism 和 roles。不要把 Planner 项直接当成 Skill。
+{"skill":{"skill_id":"ascii_snake_case","category_id":"ascii_snake_case",
+"problem_mechanism":"中文通用问题机制","routing_summary":"中文适用条件与排除条件的简述",
+"subcases":[],"triggers":["具体适用条件"],"exclusions":["具体不适用条件"],
+"compatible_with":[],"conflicts_with":[],
+"roles":{"manager":{"input_use":"如何使用上游输入","output_spec":"交给 Executor 的必要信息","guidance":"可执行策略","avoid":"应避免的错误"},
+"executor":{"input_use":"如何使用 Manager 子任务","output_spec":"交给 Auditor 的操作、结果与证据","guidance":"可执行及恢复步骤","avoid":"应避免的错误"},
+"auditor":{"input_use":"如何独立使用 Executor 结果","output_spec":"控制头、验收、完整性、证据与后续建议","guidance":"独立核验策略","avoid":"应避免的错误"}}}}
+程序负责填写 version、version_parent、status、content_language、benchmark_scope、
+interaction_modes、provenance、validation 和观察计数；不要自行编造验证结果。
+skill_id 与 category_id 必须是 1 至 80 字符的 ASCII 英文小写 snake_case，
+首字符为 a-z，其余只能是 a-z、0-9 或下划线；不要用中文、连字符或空格作 ID。
+必须有机制、触发、排除、具体执行、验证、恢复、精简路由摘要和三角色完整四字段视图。
+各 output_spec 实行最小充分交接：Manager 给出子任务、前提、约束、验收和证据；
+Executor 给出实际操作、结果、产物、证据和失败点；Auditor 保留原控制头、验收与完整性检查，
+交付证据、风险和后续修复。保留原角色输出协议及独立审核。长日志引用路径和必要摘录。
+不得复制单题命令、路径、答案、无关历史或空泛口号。只输出 JSON。"""
+
+REVISE_SKILL_BUILDER_PROMPT_ZH = CHINESE_PROMPT + """系统指令：
+仅修订所给旧 Skill 的同一问题机制。返回 {"skill":{...}} 或 {"rejected_reason":"原因"}。
+skill 必须保留旧版完整结构：problem_mechanism、routing_summary、subcases、triggers、
+exclusions、compatible_with、conflicts_with，以及 roles.manager、roles.executor、
+roles.auditor 各自的 input_use、output_spec、guidance、avoid；不得改用别名。
+保留旧版机制、适用范围、路由摘要及三个角色各四字段中的全部正确通用能力；
+在此基础上增添有证据的新能力并修复有证据的缺陷。必须显式保留旧行为契约，
+不得为缩短文本删除步骤、验证或恢复。仅改必要字段，保留 ID、类别、范围和角色边界，
+版本加一并设置 version_parent。各角色 output_spec 均保持最小充分交接及原协议必填字段；
+Auditor 必须保留控制头、验收、完整性和独立证据。无法安全合并时拒绝。只输出 JSON。"""
+
+CREATE_SKILL_SCHEMA_REPAIR_PROMPT_ZH = CREATE_SKILL_BUILDER_PROMPT_ZH + """
+\n本次输入包含上一次 Builder 的草稿、安全字段归一化结果和全部已知 schema_errors。
+逐项校正到上述精确 Schema，
+保留草稿中有证据的策略、验证和恢复内容。不要重新读取或臆造完整轨迹。
+若草稿和计划不足以形成完整三角色四字段 Skill，返回 rejected_reason。"""
+
+REVISE_SKILL_SCHEMA_REPAIR_PROMPT_ZH = REVISE_SKILL_BUILDER_PROMPT_ZH + """
+\n本次输入包含上一次修订草稿、安全字段归一化结果、旧 Skill 和全部已知 schema_errors。
+逐项校正结构，
+保留旧版所有正确能力及草稿中有证据的新增内容；无法安全修复时返回 rejected_reason。"""
+
+ROUTER_REPAIR_BUILDER_PROMPT_ZH = CHINESE_PROMPT + """系统指令：
+将所有有证据且互不冲突的修复项合并为一个 LLM Router Prompt 候选。
+保留旧版正确规则、零个/一个/多个互补 Skill 的选择、角色边界与输出结构。
+冲突或证据不足时返回 {"rejected_reason":"原因"}，否则返回
+{"candidate_router_prompt":"..."}。不能把尚未存在的 Skill 算作旧 Router 遗漏。只输出 JSON。"""

@@ -205,7 +205,7 @@ D. NO_CHANGE:
 E. INSUFFICIENT_EVIDENCE:
    Evidence cannot reliably distinguish these causes.
 
-Do not update Router Prompt and Skill in the same iteration.
+Independent, evidence-backed Router and Skill updates may be planned in the same iteration.
 A CREATE_NEW_SKILL diagnosis may identify several distinct, evidence-backed missing mechanisms; the Builder may create one Skill for each.
 If a separate coverage gap and a concrete defect in an injected Skill both contributed, choose CREATE_NEW_SKILL and list each defective old Skill in revision_targets with its own mechanism and evidence_refs. Inspect injected_skill_guidance. Do not overlook a faulty old Skill merely because a new one is needed. Return an empty revision_targets list when no injected Skill has a supported guidance defect. Never disguise a Router error as a Skill defect.
 A task being incomplete does not by itself prove a Skill failure.
@@ -309,9 +309,8 @@ Rules:
    Use CREATE_NEW_SKILL for an absent or uncovered capability, including a
    complementary capability missing from an existing Skill. A new Skill can be
    staged as provisional before replay, so base it strictly on trace evidence
-   and never claim independent validation until that replay passes. All Skills
-   proposed in one task share one replay; every candidate must be selected and
-   injected during that task for the batch to pass. Revisions also require replay.
+   and never claim independent validation from a shared replay. A combined
+   outcome is observational evidence, not proof of each candidate's contribution.
 4. Every role view must contain:
    - input_use: how the role interprets, verifies, and uses the previous role's structured output;
    - output_spec: what structured information the role hands to the next role;
@@ -340,7 +339,7 @@ Rules:
     characters covering the reusable capability, applicability, and key
     exclusions. It is the only Skill prose shown to Router; keep detailed
     procedures and role handoff instructions in roles.
-12. For CREATE_NEW_SKILL, return one new Skill per supported missing mechanism. If revision_requests is nonempty, also return exactly one revised version of each requested existing Skill in the same skills array. For REVISE_SKILL alone, return exactly one revised Skill. All are validated together in one replay.
+12. For CREATE_NEW_SKILL, return one new Skill per supported missing mechanism. If revision_requests is nonempty, also return exactly one revised version of each requested existing Skill in the same skills array. For REVISE_SKILL alone, return exactly one revised Skill. Shared replay results cannot independently validate every item.
 13. Return JSON only.
 
 INPUT:
@@ -426,3 +425,85 @@ content, task_specific_generalized may be true with that explanation.
 Return exactly one JSON object, with no Markdown:
 {"preserves_reusable":true,"task_specific_generalized":true,"checks":[{"field":"roles.manager.guidance","preserved":true,"generalized":true,"reason":"Identify the retained function and where it appears"}],"reason":"Overall explanation"}
 checks must cover exactly changed_fields. Use JSON booleans, not strings."""
+
+EVOLUTION_PLANNER_PROMPT_EN = ENGLISH_ONLY + "\n\n" + """SYSTEM:
+Plan evidence-grounded Skill evolution from extracted experiences and compact trajectory evidence.
+Return JSON with independent arrays create_skills, revise_skills, update_router, and no_update_reasons.
+Each item needs evidence_refs naming real round IDs or recorded routing evidence. Cite a round
+for every Skill. Do not write full Skill content. Multiple items per array are allowed;
+all arrays may be empty. Preserve successful local strategies in failed tasks.
+Create only a distinct reusable mechanism absent from existing cards. If an existing
+Skill covers it but routing missed it, plan Router repair instead. Revision must
+target the same mechanism and name old capabilities to preserve, capabilities to add,
+and defects to fix. Router repair requires a recorded eligible/selected mismatch;
+the absence of a Skill that did not yet exist is not a routing error. Independent
+issues may activate all three branches. Never infer causal credit from selection
+or task success. Return only JSON.
+Schema: {"create_skills":[{"mechanism":"","why_new":"","general_strategy":"",
+"triggers":[],"exclusions":[],"role_guidance":{"manager":"","executor":"","auditor":""},
+"evidence_refs":[],"expected_improvement":""}],
+"revise_skills":[{"target_skill_id":"","revision_reason":"",
+"preserve_capabilities":[],"add_capabilities":[],"fix_defects":[{"field":"roles.executor.guidance","old_text":"exact defective clause","replacement_text":"corrected behavior","reason":"why incorrect","evidence_refs":[]}],"evidence_refs":[]}],
+"update_router":[{"router_error_type":"omission|wrong_skill|conflict",
+"affected_skill_ids":[],"observed_error":"","repair_instruction":"",
+"preserve_rules":[],"evidence_refs":[],"depends_on_skill_ids":[]}],
+"no_update_reasons":[]}"""
+
+CREATE_SKILL_BUILDER_PROMPT_EN = ENGLISH_ONLY + "\n\n" + """SYSTEM:
+Build exactly one new, reusable Skill from the supplied plan item and cited excerpts.
+Both skill_id and category_id must match [a-z][a-z0-9_]{0,79}; use lowercase ASCII snake_case only.
+Reject insufficient evidence with {"rejected_reason":"..."}. Return {"skill":{...}}
+using exactly this JSON structure and these key names (no mechanism, role_views,
+tri_role_view or manager_view aliases):
+{"skill":{"skill_id":"ascii_snake_case","category_id":"ascii_snake_case",
+"problem_mechanism":"reusable problem mechanism","routing_summary":"short applicability and exclusion summary",
+"subcases":[],"triggers":["specific use condition"],"exclusions":["specific exclusion"],
+"compatible_with":[],"conflicts_with":[],
+"roles":{"manager":{"input_use":"upstream use","output_spec":"necessary Executor handoff","guidance":"actionable strategy","avoid":"failure to avoid"},
+"executor":{"input_use":"Manager subtask use","output_spec":"actions, results and evidence for Auditor","guidance":"execution and recovery","avoid":"failure to avoid"},
+"auditor":{"input_use":"independent use of Executor results","output_spec":"control headers, acceptance, integrity, evidence and follow-up","guidance":"independent checks","avoid":"failure to avoid"}}}}
+The program supplies version, version_parent, status, content_language,
+benchmark_scope, interaction_modes, provenance, validation and counters.
+Do not claim validation. Include the mechanism, triggers, exclusions, concrete
+execution and verification, failure recovery, routing_summary, and three complete
+role views with input_use/output_spec/guidance/avoid. Each output_spec uses minimal
+sufficient handoff: Manager passes subtask, prerequisites, constraints, acceptance
+and evidence; Executor passes actual actions, result, artifacts, evidence and failure;
+Auditor passes protocol control headers, acceptance and integrity checks, evidence,
+risk and next repair. Preserve original role output protocols and independent audit.
+Reference long logs by path and necessary excerpt. Never copy one-task commands,
+paths, answers, unrelated history, or generic slogans. Return JSON only."""
+
+REVISE_SKILL_BUILDER_PROMPT_EN = ENGLISH_ONLY + "\n\n" + """SYSTEM:
+Incrementally revise exactly the supplied old Skill for the same mechanism.
+Return {"skill":{...}} or {"rejected_reason":"..."}. Keep every valid old
+field, including problem_mechanism, routing_summary, subcases, triggers,
+exclusions, compatible_with, conflicts_with and roles.manager/executor/auditor,
+each with input_use, output_spec, guidance and avoid. Do not rename these keys.
+Preserve every valid old capability in mechanism, applicability, routing summary and all four fields of
+each role. Add evidenced capability and repair evidenced defects. Preserve old
+behavioral contracts explicitly; do not replace them with a short slogan or
+delete steps to fit a budget. Change only necessary fields. Keep old ID, category,
+scope and role boundaries; increment version and set version_parent. Each role
+output_spec must make a minimal sufficient handoff while retaining required
+Manager fields, Executor actions/results and Auditor control headers, acceptance,
+integrity and evidence. If safe merge cannot fit, reject. Return JSON only."""
+
+CREATE_SKILL_SCHEMA_REPAIR_PROMPT_EN = CREATE_SKILL_BUILDER_PROMPT_EN + """
+\nThe input contains your earlier draft, safe alias normalization, and all known
+schema_errors. Repair every listed defect to the exact schema above while retaining evidenced strategy, verification and
+recovery. Do not invent trajectory facts. If the draft and plan cannot support
+three complete four-field role views, return rejected_reason."""
+
+REVISE_SKILL_SCHEMA_REPAIR_PROMPT_EN = REVISE_SKILL_BUILDER_PROMPT_EN + """
+\nThe input contains the earlier revision draft, safe alias normalization, the old
+Skill and all known schema_errors. Repair every listed defect while preserving every valid old capability and evidenced addition.
+If safe repair is impossible, return rejected_reason."""
+
+ROUTER_REPAIR_BUILDER_PROMPT_EN = ENGLISH_ONLY + "\n\n" + """SYSTEM:
+Revise the supplied old LLM Router Prompt using all compatible evidence-backed
+repair items as one candidate. Preserve existing correct rules, zero/one/multiple
+complementary Skill selection, role boundaries and output schema. Reject if items
+conflict or evidence is insufficient: {"rejected_reason":"..."}. Otherwise return
+{"candidate_router_prompt":"..."}. Do not claim a Skill absent at routing time
+was omitted. Return JSON only."""

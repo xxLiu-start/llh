@@ -840,7 +840,8 @@ def test_failure_can_create_and_revise_in_one_replay(tmp_path: Path) -> None:
     assert len(calls) == 1
     assert {item["skill_id"]: item["version"] for item in SkillBank.load(bank.path).skills} == {
         "existing": 2, "missing_capability": 1}
-    assert all(item["status"] == "validated" for item in SkillBank.load(bank.path).skills)
+    assert all(item["status"] == "provisional" for item in SkillBank.load(bank.path).skills)
+    assert all(item["independent_causal_credit"] is False for item in result["validation"])
     assert "injected_skill_guidance" in agent.prompts[0]
     assert json.loads(agent.prompts[1].split("INPUT JSON:\n", 1)[1])["extracted_experiences"] == result["extracted_experiences"]
 
@@ -1011,7 +1012,7 @@ def test_temporary_revision_routes_then_moves_to_validated_bank(tmp_path: Path) 
     stage_skill_candidate(bank, revision)
     loaded = SkillBank.load(bank.path)
     assert [card["version"] for card in loaded.eligible("manager", "en")] == [2]
-    assert json.loads(bank.path.read_text())["skills"] == []
+    assert [item["version"] for item in json.loads(bank.path.read_text())["skills"]] == [1]
     temporary = json.loads(bank.temporary_path.read_text())
     assert temporary["skills"][0]["version"] == 2
     assert temporary["skills"][0]["update_count"] == 1
@@ -1150,7 +1151,7 @@ def test_dual_bank_load_handles_interrupted_revision_move(tmp_path: Path) -> Non
     assert [card["version"] for card in recovered.eligible("manager", "en")] == [2]
     assert len(recovered.shadowed_skills) == 1
     recovered.save()
-    assert json.loads(bank.path.read_text())["skills"] == []
+    assert [item["version"] for item in json.loads(bank.path.read_text())["skills"]] == [1]
 
 
 def test_unvalidated_revision_keeps_previous_skill_in_temporary_bank(tmp_path: Path) -> None:
@@ -1161,7 +1162,7 @@ def test_unvalidated_revision_keeps_previous_skill_in_temporary_bank(tmp_path: P
     stage_skill_candidate(bank, revision)
     loaded = SkillBank.load(bank.path)
     assert [card["version"] for card in loaded.eligible("manager", "en")] == [2]
-    assert json.loads(loaded.path.read_text())["skills"] == []
+    assert [item["version"] for item in json.loads(loaded.path.read_text())["skills"]] == [1]
     assert loaded.shadowed_skills[0]["version"] == 1
 
 
@@ -1272,7 +1273,8 @@ def test_revised_skill_requires_replay_and_effective_reward_gain(tmp_path: Path)
 
     result = asyncio.run(session.finish(baseline, replay=replay, reference_tokens=1000))
     assert result["validation"]["accepted"]
-    assert SkillBank.load(bank.path).skills[0]["status"] == "validated"
+    assert SkillBank.load(bank.path).skills[0]["status"] == "provisional"
+    assert result["validation"]["independent_causal_credit"] is False
     assert SkillBank.load(bank.path).skills[0]["version"] == 2
 
 

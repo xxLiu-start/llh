@@ -65,13 +65,3 @@ __pycache__/
 # 环境变量及密钥
 .env
 .env.*
-# Local files
-/output/
-/train_dataset/
-.pytest_cache/
-.ruff_cache/
-__pycache__/
-*.pyc
-*.log
-.env
-.env.*

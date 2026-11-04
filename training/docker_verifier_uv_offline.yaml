@@ -1,0 +1,17 @@
+# Verifier-only PATH supplies the exact uv version already present on the host.
+# These mounts do not change the benchmark's Dockerfile or tests/test.sh.
+services:
+  main:
+    volumes:
+      - type: bind
+        source: ${LH_VERIFIER_UV_BINARY}
+        target: /opt/lhh-verifier-uv/uv
+        read_only: true
+      - type: bind
+        source: ${LH_VERIFIER_UV_SUPPORT_DIR}/curl
+        target: /opt/lhh-verifier-uv/curl
+        read_only: true
+      - type: bind
+        source: ${LH_VERIFIER_UV_SUPPORT_DIR}/env
+        target: /root/.local/bin/env
+        read_only: true

@@ -1,0 +1,7 @@
+#!/bin/sh
+# The benchmark installer is redundant when the exact pinned uv is mounted.
+if [ "$#" -eq 2 ] && [ "$1" = "-LsSf" ] && [ "$2" = "https://astral.sh/uv/0.7.13/install.sh" ]; then
+    printf '%s\n' '#!/bin/sh' 'test "$(/opt/lhh-verifier-uv/uv --version)" = "uv 0.7.13"'
+    exit 0
+fi
+exec /usr/bin/curl "$@"

@@ -10,7 +10,7 @@
 测试任务仍使用原评测目录。新的测试配置用当前 `src/lh_harness/` 主实现加载训练后 SkillBank，并设置 `learning_enabled: false`，因此测试任务不会更新 SkillBank。
 
 训练使用中文版 Manager/Executor/Auditor、Router 和 Skill 学习 Prompt（`prompt_language: zh`），生成中文 Skill（`content_language: zh`）。TB2.1 评估保留英文角色与 Router Prompt（`prompt_language: en`）、关闭学习；英文 Router 仍可选择和注入中文 Skill。数据集任务原文保持原样。当前工作区缺少 TB2.1 原测试任务，无法在本地确认任务说明语言。
-Router 候选卡片包含当前角色的 `input_use` 和 `output_spec`，供选择时核对上下游交接；其余完整角色指导仍在选中后加载。
+Router 只读取精简的 `routing_summary`、版本和适用范围等选择信息；选中后才加载当前角色的四字段指导。
 本方法的训练与测试配置均使用 `deepseek-v4.1-flash`。Claude Code 仍向本地代理发送 Anthropic Messages；代理把文本与工具消息转换为 `/v1/chat/completions` 请求，再把 OpenAI 的结构化函数调用转回 Anthropic `tool_use`。这使用了接口检查中能够返回结构化工具调用的协议。训练驱动与测试脚本会在启动 Harbor 前规范化 Base URL 的结尾 `/v1`，代理把密钥作为 `Authorization: Bearer` 转发。
 
 ## 运行
@@ -33,25 +33,27 @@ python training/check_model_endpoint.py
 ./training/run_terminal_bench_pro.sh --start-from analyze-arm-shellcode-network-connections
 ```
 
-如果任务容器无法访问 `downloads.claude.ai`，可将匹配版本的可执行文件放在 `output/<数据集名>/jobs/claude_code_cache/<版本号>/claude`，或把其绝对路径设为 `LH_CLAUDE_OFFLINE_BINARY`。训练入口也会检查其他本地输出目录的同版本缓存，核对 `claude --version` 后挂载，避免 Harbor 联网安装。
+如果任务容器无法访问 `downloads.claude.ai`，可将匹配版本的可执行文件放在 `output/<数据集名>/jobs/claude_code_cache/<版本号>/claude`，或把其绝对路径设为 `LH_CLAUDE_OFFLINE_BINARY`。训练和原版 LHH 评估入口都会检查其他本地输出目录及 `output/his/` 下的同版本缓存，核对 `claude --version` 后挂载，避免 Harbor 联网安装。原版评估找不到缓存时会在第一题启动前报错。
 
-任务按目录名字典序处理；`--start-from` 包含指定题目，跳过其前面的题目，`--limit N` 对剩余题目生效。训练驱动按任务逐个运行。每个任务先运行基线，可针对不同的已证实机制生成多个 Skill。若已注入旧 Skill 同时存在证据支持的具体缺陷，同一次诊断也可在新建 Skill 时提出修订。所有 Skill 候选先进入 `output/terminal-bench-pro/state/skillbank_temporary.json`。默认共用一次新的 Harbor 任务容器重跑来源题目，整组候选都必须被选中并注入；加 `--no-validation-replay` 可跳过第二次运行，此时候选仍是 provisional，Router 修订也不会提交。只有候选实际注入、Harbor 独立评分确认成功、没有 Auditor 硬约束回退且完整任务 reward 高于基线，才移入常态 `skillbank.json`；未通过的候选留在临时库。修订开始前，常态库中的旧版也会移到临时库。每个 Skill 版本分别按任务记录选择次数和选择后任务成功次数。修订版从零开始计数；旧版本的统计在验证期间保存在临时库的 shadowed_skills，验证通过后保存在 SkillBank 的 history。Router Prompt 修订仍按原有重跑条件验证。模型或 Builder 失败、无可分析证据时会记录错误，不伪造 Skill。经验提取会把模型误写的负向经验 `strategy` 规范为 `avoidance_strategy`，保留原输出和规范化记录；证据中的真实产物路径单独保存，未核实路径不会进入候选 Builder。Harbor 判题结果若与 Harness 完成判断不一致，基线期间生成的候选会隔离并保留原文件，不写入临时 SkillBank；决策记录 `learning_outcome_mismatch`。候选重跑验收与 Skill 成功次数优先使用 Harbor 评分，报告同时保存 Harness 判断及分歧。训练输出按数据集目录归档：`output/terminal-bench-pro/{jobs,generated_configs,decisions,state}/`；使用 `--dataset` 指定其他训练集时，目录名随数据集目录名变化。`--task` 可重复指定，`--force` 可重新运行已有决定的题。每次重跑使用新的 Harbor 作业名，旧日志保留。已完成题目通过决定文件跳过；中断在题目内部时，该题从初始环境重新运行。
+任务按目录名字典序逐题运行。基线轨迹先提取经验，再由 Evolution Planner 分别规划新建、修订与 Router 更新；每个数组可以有多项。Builder 必须使用精确 Skill Schema，结构错误时只根据草稿和计划进行一次有限校正，证据或安全检查失败则拒绝。Harbor 与 Harness 的完成判断冲突时隔离该次候选。其余合格候选从试跑的 SkillBank 快照转入训练库的 `skillbank_temporary.json`，以 provisional 参与后续训练。来源题目组合重跑只提供组合观察，不能自动把每个候选升级为 validated；升级需要单项独立验证。已验证旧版仍保存在主库，修订候选可以回退。`--task` 可重复指定，`--force` 重新运行已有决定的题；每次重跑使用独立 Harbor 作业并保留旧日志。
 
-修订 Skill 时，Builder 必须保留旧版仍有用的通用功能，并把单题路径、数值和示例泛化。修订内容变化后会增加一次独立模型审查，逐字段核对新旧版本；审查结论、变更字段和 Token 用量保存在 `skill_learning.revision_preservation_reviews`。审查失败时整批候选不会写入临时 SkillBank。内容审查不替代任务重跑验证。
+修订 Skill 时，Builder 必须保留旧版仍有用的通用功能，并把单题路径、数值和示例泛化。修订内容变化后会增加一次独立模型审查，逐字段核对新旧版本。Evolution Planner 将逐项审查结果保存在 `request_outcomes`，审查失败只拒绝该项；旧版批量流程将结果保存在 `skill_learning.revision_preservation_reviews`，失败时拒绝整批候选。内容审查不替代独立验证。
 
-默认训练配置为控制费用，最多执行 6 轮，每轮 Executor 最多 12 次模型交互、最长 420 秒；Manager 和 Auditor 也有独立上限。模型单次输出上限保持 65536 token。角色历史和已验证上下文分别限制在 30000、20000 字符。每个基线或候选试跑在完整回合之间检查 150 万 token 软上限；达到后记录 `token_budget_exhausted`，仍运行失败诊断。它不是精确的计费上限：单回合可能超出阈值，诊断和 Builder 也会额外调用模型。上述限制会降低复杂题的完成概率；需要更长运行时，可复制 `terminal_bench_pro_skill_learning.yaml`、调整限额，并用 `--template <副本路径>` 运行。`skill_token_budget` 只限制注入的 Skill 内容，`skill_reward_reference_tokens` 只用于奖励计算。超时回合的已完成请求用量会从代理记录补计；正在超时瞬间处理的请求仍可能无法精确计量。候选独立验证会再次运行同一题，因此总费用可能高于单次基线。
+默认训练配置最多执行 25 轮；Executor 每次回合最多 200 次模型交互、最长 4200 秒，Manager 和 Auditor 各有 200 次交互上限。模型单次输出上限保持 65536 token。角色历史和已验证上下文分别限制在 30000、20000 字符。每个基线或候选试跑在完整回合之间检查 150 万 token 软上限；达到后记录 `token_budget_exhausted`，仍运行失败诊断。它不是精确的计费上限：单回合可能超出阈值，诊断和 Builder 也会额外调用模型。需要调整限额时，可复制 `terminal_bench_pro_skill_learning.yaml`，修改后用 `--template <副本路径>` 运行。`skill_token_budget` 只限制注入的 Skill 内容，`skill_reward_reference_tokens` 只用于奖励计算。超时回合的已完成请求用量会从代理记录补计；正在超时瞬间处理的请求仍可能无法精确计量。候选独立验证会再次运行同一题，因此总费用可能高于单次基线。
 
 训练运行的 Manager 只接收原任务、当前状态、任务契约、每轮简短审计结论及近期 Harness 反馈；Executor 和 Auditor 只接收本轮子任务及明确引用的审计证据。任务结束后先从每个已记录轮次的有界摘录提取正向与负向经验；第二阶段依据这些经验、SkillBank 和实际路由记录进行匹配，并接收所有轮次的简短索引及最多 6 轮关键摘录。Builder 最多接收 8 轮（优先包含诊断引用的轮次）。经验结果或提取错误保存在 skill_learning 中。完整角色报告、模型输入输出与原始轨迹仍存放在运行日志和只读溯源记录中；原始工具轨迹不会整批注入学习提示词。有轨迹的任务会增加一次经验提取模型调用。Claude Code 在单个角色回合内为连续工具调用维护的对话历史仍由其自身处理。
 
 每个 Skill 有一段简短的 `routing_summary`，概括可复用能力、适用时机和关键排除条件。Router 只收到这段简述及 ID、版本、范围、状态等选择元数据；确认选中后，程序才从 SkillBank 读取该 Skill 对当前角色的 `input_use`、`output_spec`、`guidance`、`avoid` 并注入角色 Prompt。旧 SkillBank 条目会在内存中生成有长度上限的简述；仅精确匹配旧版内置 Router Prompt 时自动切换到新版，用户自定义 Router Prompt 保留。
 
-生成合法的临时 Skill 候选时，另存一份可读副本到 `output/<数据集名>/skill_tmp/<题目>/<run_id>/candidate.json`；`validation.json` 保存整组候选共用的一次重跑结果与 reward 差值。每次运行使用独立目录，历史候选保留。这些文件仅供过程溯源，训练流程不会读取；即使保存失败，也不改变训练结果。批量候选重跑必需的独立候选文件放在 `generated_configs/`。Router Prompt 候选仍由原有溯源记录保存。
+Evolution Planner 的候选及逐项处理结果写在本次运行的 `skill_candidate.json` 和溯源记录中。旧版候选重跑流程还会在 `output/<数据集名>/skill_tmp/<题目>/<run_id>/candidate.json` 另存可读副本；`validation.json` 保存整组候选共用的一次重跑结果与 reward 差值。这些副本仅供过程溯源，训练流程不会读取；即使保存失败，也不改变训练结果。批量候选重跑所需配置放在 `generated_configs/`。
 
 Harbor 训练和测试使用无人值守策略：Manager 应先从任务说明、元数据、环境文件和审计证据界定输入并继续执行；无法可靠解决的任务定义问题应明确阻塞。若训练中的中文 Manager 仍输出 `下一步: 请示用户` 且还有轮次，Harness 会给一次带反馈的重新决策机会；再次请求人工输入或轮次已尽时记为 `unattended_needs_human_input` 并保存问题，不会捏造答复。普通交互运行仍保留请示用户能力。未成功但有实际 Manager、Executor 或 Auditor 轨迹的运行会尝试失败诊断；没有可分析轨迹则记录 `skip_reason`。`skill_learning` 报告保留真实动作、诊断理由、原始解析失败输出和 `error_stage`，不会把默认状态冒充模型的 `NO_CHANGE`。
 
 重跑单题使用 `./training/run_terminal_bench_pro.sh --task advanced-poker-hand-classifier --force`（需要 Docker 权限时在外层使用 `sg docker -c '...'`）。不加 `--force` 且已有非失败决策时，通常返回 `execution: reused_prior_decision`；旧版证据引用校验错误会自动重试。`--force` 会重跑整个任务，再重新诊断及按需验证候选；`--validation-replay` 可显式开启默认的候选重跑验证。切换开关时会新建任务运行，而不会复用另一模式的旧决策；重新打开验证不会自动验证之前留下的原候选。当前没有只对旧轨迹重新诊断的命令。每次真实运行都有独立 `run_id`、Harbor 作业、配置、临时 SkillBank 快照和 `decisions/attempts/<题目>/<run_id>.json`。最新结果仍写 `decisions/<题目>.json`，覆盖前会把旧版备份到 `decisions/history/<题目>/`；Provider 等基础设施失败写入当次 attempt，不覆盖最新决策。
 
-每次调用训练脚本都会将终端标准输出和错误输出同步保存到 `output/<数据集名>/console_logs/train-*.log`，同时在终端打印具体日志路径。脚本保留原训练命令的退出状态，方便定位失败。
+通过 `./training/run_terminal_bench_pro.sh` 启动时，标准输出和错误输出同步保存到 `output/<数据集名>/console_logs/train-*.log`，终端会打印路径。直接执行 Python 模块不会自动创建该日志。
+
+Terminal-Bench Pro 题目自带的验证脚本会在每次判分时从 GitHub 下载 `uv 0.7.13`，网络故障曾使真实测试无法启动并被记为 0 分。原版 LHH 评估、Skill 训练和双 SkillBank 评估现在只在使用这段安装脚本的题目中，为 Harbor 验证阶段挂载主机已有的同版本 `uv`，并跳过重复下载；题目的 `tests/test.sh`、测试用例、Dockerfile 与 Agent 阶段的 PATH 保持原样。运行主机需要有可执行的 `uv 0.7.13`；若不在 PATH 中，设置 `LH_VERIFIER_UV_BINARY=/绝对路径/uv`。版本不符或文件缺失时会在启动试跑前明确报错。旧 0 分记录不会被自动修改，需用 `--force` 重跑相关题目。
 
 ## 只读溯源记录
 

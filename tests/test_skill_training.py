@@ -18,9 +18,96 @@ import yaml
 
 from lh_harness.harbor_url import claude_code_upstream_base_url
 from lh_harness import docker_build_proxy as build_proxy_module
-from lh_harness.skill_learning import SkillBank
+from lh_harness.skill_learning import SkillBank, stage_skill_candidate
 from lh_harness.training_provenance import ProvenanceWriter
-from lh_harness.train_terminal_bench_pro import _find_cached_claude_binary, _learning_reason, _require_valid_trial_report, _run_trial, _trial_token_usage, _write_trial_config, discover_tasks, main, train_one
+from lh_harness.train_terminal_bench_pro import _find_cached_claude_binary, _learning_reason, _require_valid_trial_report, _run_trial, _transfer_evolution_candidates, _trial_token_usage, _write_trial_config, discover_tasks, main, train_one
+
+
+def test_evolution_trial_candidate_reaches_persistent_training_bank(tmp_path: Path, monkeypatch) -> None:
+    candidate = {**_candidate(), "routing_summary": "Use for missing handoff evidence",
+                 "triggers": ["Evidence handoff is required"],
+                 "exclusions": ["No handoff"], "validation": {}}
+    bank_path = tmp_path / "bank.json"
+
+    def fake_run_trial(config_path, jobs_dir):
+        config = yaml.safe_load(config_path.read_text())
+        trial_bank = SkillBank.load(Path(config["agents"][0]["kwargs"]["skill_bank_path"]))
+        stage_skill_candidate(trial_bank, candidate)
+        output = jobs_dir / "trial" / "skill_harness"
+        routes = output / "lh_harness" / "role_orchestration"
+        routes.mkdir(parents=True)
+        (routes / "skill_candidate.json").write_text(json.dumps({
+            "kind": "evolution", "candidate": [candidate], "router_candidate": None,
+            "assessment": {"create_skills": [], "revise_skills": [], "update_router": []},
+            "request_outcomes": [{"branch": "create_skills", "status": "provisional"}],
+        }))
+        (routes / "skill_routes.json").write_text("[]")
+        return {"task": "Do the task", "status": "incomplete", "completion_satisfied": False,
+                "rounds": [{"round_index": 1, "plan_text": "Attempted task"}],
+                "skill_learning": {"action": "EVOLVE", "task_tokens": 100}}, output
+
+    monkeypatch.setattr("lh_harness.train_terminal_bench_pro._run_trial", fake_run_trial)
+    result = train_one(
+        "sample-task", template={"agents": [{"kwargs": {"prompt_language": "en"}}]},
+        dataset=tmp_path / "dataset", bank_path=bank_path,
+        generated_dir=tmp_path / "generated", jobs_root=tmp_path / "jobs",
+        decisions_dir=tmp_path / "decisions", reference_tokens=1000,
+    )
+    assert result["reason"] == "provisional_staged"
+    assert result["candidate_ids"] == [candidate["skill_id"]]
+    assert result["transfer_outcomes"][0]["status"] == "provisional"
+    bank = SkillBank.load(bank_path)
+    assert bank.skills[0]["status"] == "provisional"
+    assert bank.eligible("manager", "en", benchmark_id="terminal_bench_2_1",
+                         interaction_mode="cli")[0]["skill_id"] == candidate["skill_id"]
+
+
+def test_evolution_transfer_keeps_valid_items_when_sibling_is_missing(tmp_path: Path) -> None:
+    good = {**_candidate(), "routing_summary": "Use for evidence handoff", "validation": {}}
+    missing = {**_candidate(), "skill_id": "missing_sibling",
+               "routing_summary": "Use for missing sibling", "validation": {}}
+    source_path, bank_path = tmp_path / "trial.json", tmp_path / "bank.json"
+    stage_skill_candidate(SkillBank(source_path), good)
+    target, outcomes, router_transferred = _transfer_evolution_candidates(
+        proposal={"candidate": [good, missing], "router_candidate": None},
+        trial_bank_path=source_path, bank_path=bank_path, language="en",
+    )
+    assert [item["status"] for item in outcomes] == ["provisional", "transfer_failed"]
+    assert router_transferred is False
+    assert [item["skill_id"] for item in SkillBank.load(bank_path).skills] == [good["skill_id"]]
+
+
+def test_evolution_router_dependency_follows_transferred_skill(tmp_path: Path) -> None:
+    skill = {**_candidate(), "routing_summary": "Use for evidence handoff", "validation": {}}
+    source_path, bank_path = tmp_path / "trial.json", tmp_path / "bank.json"
+    source = SkillBank(source_path)
+    stage_skill_candidate(source, skill, save=False)
+    source.router_candidates.append({
+        "language": "en", "prompt": source.router_prompts["en"] + "\nUse the new handoff Skill.",
+        "status": "provisional", "dependencies": [skill["skill_id"]],
+        "evidence_refs": ["round_001"], "validation": {},
+    })
+    source.save()
+    proposal = {"candidate": [skill], "router_candidate": source.router_candidates[0]["prompt"]}
+    target, outcomes, transferred = _transfer_evolution_candidates(
+        proposal=proposal, trial_bank_path=source_path, bank_path=bank_path, language="en")
+    assert transferred is True
+    assert [item["status"] for item in outcomes] == ["provisional", "provisional"]
+    assert SkillBank.load(bank_path).router_candidates[0]["dependencies"] == [skill["skill_id"]]
+
+    blocked_path = tmp_path / "blocked.json"
+    _, blocked_outcomes, blocked = _transfer_evolution_candidates(
+        proposal={"candidate": [], "router_candidate": proposal["router_candidate"]},
+        trial_bank_path=source_path, bank_path=blocked_path, language="en")
+    assert blocked is False
+    assert blocked_outcomes[0]["status"] == "transfer_failed"
+
+
+def test_evolution_no_candidate_reason_is_explicit() -> None:
+    assert _learning_reason({"action": "EVOLVE", "request_outcomes": [
+        {"branch": "create_skills", "status": "rejected", "reason": "missing problem_mechanism"},
+    ]}) == "evolution_candidates_rejected"
+    assert _learning_reason({"action": "EVOLVE", "request_outcomes": []}) == "evolution_no_update"
 
 
 def _candidate() -> dict:
@@ -410,6 +497,7 @@ def test_main_detects_cached_claude_code_without_online_install(tmp_path: Path, 
 
     monkeypatch.setattr("lh_harness.train_terminal_bench_pro.train_one", fake_train_one)
     assert main(["--dataset", str(dataset), "--template", str(template), "--task", "sample-task"]) == 0
+    assert (tmp_path / "output" / dataset.name / "state" / "skillbank.json").is_file()
 
 
 def test_cached_claude_lookup_reuses_matching_release_from_another_output(tmp_path: Path) -> None:
@@ -520,11 +608,8 @@ def test_training_driver_replays_same_task_and_commits_only_after_success(
     assert calls[0]["agents"][0]["kwargs"]["skill_bank_path"] == calls[1]["agents"][0]["kwargs"]["skill_bank_path"]
     assert all(call["agents"][0]["kwargs"]["prompt_language"] == "en" for call in calls)
     assert calls[1]["agents"][0]["kwargs"]["candidate_path"].endswith("skill_candidate.json")
-    if candidate_complete:
-        assert SkillBank.load(bank_path).skills[0]["status"] == "validated"
-    else:
-        assert json.loads(bank_path.read_text())["skills"] == []
-        assert SkillBank.load(bank_path).skills[0]["status"] == "provisional"
+    assert json.loads(bank_path.read_text())["skills"] == []
+    assert SkillBank.load(bank_path).skills[0]["status"] == "provisional"
     if block_skill_tmp:
         assert "skill_tmp_path" not in result
     else:
@@ -533,14 +618,14 @@ def test_training_driver_replays_same_task_and_commits_only_after_success(
         assert json.loads((temporary_skill / "candidate.json").read_text()) == _candidate()
         archived_validation = json.loads((temporary_skill / "validation.json").read_text())
         assert archived_validation["validation"] == result["validation"]
-        assert archived_validation["bank_committed"] is candidate_complete
+        assert archived_validation["bank_committed"] is False
         assert (temporary_skill / "candidate.json").stat().st_mode & 0o777 == 0o600
     provenance_path = tmp_path / "provenance" / "sample-task.jsonl"
     assert provenance_path.is_file()
     provenance_events = [json.loads(line)["event"] for line in provenance_path.read_text().splitlines()]
     assert "candidate_version" in provenance_events
     assert "decision" in provenance_events
-    assert provenance_events.count("bank_snapshot") == 4 + int(candidate_complete)
+    assert provenance_events.count("bank_snapshot") == 5
     assert provenance_events.count("candidate_version") == 2
 
 
@@ -712,7 +797,7 @@ def test_disabled_validation_replay_keeps_candidates_unverified(tmp_path: Path, 
     else:
         assert bank.skills[0]["status"] == "provisional"
         assert bank.skills[0]["validation"] == result["validation"]
-        assert json.loads(bank_path.read_text())["skills"] == []
+        assert [item["version"] for item in json.loads(bank_path.read_text())["skills"]] == ([1] if kind == "revision" else [])
         if kind == "revision":
             assert bank.shadowed_skills[0]["version"] == 1
             assert (bank.shadowed_skills[0]["selection_count"], bank.shadowed_skills[0]["success_count"]) == (5, 2)
@@ -772,12 +857,12 @@ def test_new_skill_replays_task_before_validation(tmp_path: Path, monkeypatch) -
     attempt = json.loads(next((tmp_path / "decisions" / "attempts" / "sample-task").glob("*.json")).read_text())
     assert attempt["referenced_skill_names"] == ["evidence_handoff"]
     bank = SkillBank.load(bank_path)
-    assert bank.skills[0]["status"] == "validated"
+    assert bank.skills[0]["status"] == "provisional"
     assert bank.skills[0]["selection_count"] == 1
     assert bank.skills[0]["success_count"] == 1
-    assert not bank.temporary_path.exists()
+    assert bank.temporary_path.exists()
     assert bank.eligible("manager", "en", benchmark_id="terminal_bench_2_1", interaction_mode="cli")[0]["skill_id"] == candidate["skill_id"]
-    assert json.loads((tmp_path / "skill_tmp" / "sample-task" / result["run_id"] / "validation.json").read_text())["bank_committed"] is True
+    assert json.loads((tmp_path / "skill_tmp" / "sample-task" / result["run_id"] / "validation.json").read_text())["bank_committed"] is False
 
 
 def test_training_cli_completes_baseline_replay_and_bank_commit(tmp_path: Path, monkeypatch) -> None:
@@ -823,7 +908,7 @@ def test_training_cli_completes_baseline_replay_and_bank_commit(tmp_path: Path, 
     assert main(["--dataset", str(dataset), "--template", str(template), "--task", "sample-task"]) == 0
     assert len(calls) == 2
     state = tmp_path / "output" / dataset.name / "state" / "skillbank.json"
-    assert SkillBank.load(state).skills[0]["status"] == "validated"
+    assert SkillBank.load(state).skills[0]["status"] == "provisional"
     decision = json.loads((tmp_path / "output" / dataset.name / "decisions" / "sample-task.json").read_text())
     assert decision["accepted"] is True
     assert decision["validation"]["reward_delta"] > 0
@@ -931,10 +1016,10 @@ def test_multiple_new_skills_replay_together(tmp_path: Path, monkeypatch, block_
     assert set(result["candidate_ids"]) == {"evidence_handoff", "second_handoff"}
     assert result["validation"]["accepted"] is all_selected
     assert result["validation"]["selected_candidates"] == {first["skill_id"]: True, second["skill_id"]: all_selected}
-    assert {item["skill_id"] for item in json.loads(bank_path.read_text())["skills"]} == ({first["skill_id"], second["skill_id"]} if all_selected else set())
+    assert {item["skill_id"] for item in json.loads(bank_path.read_text())["skills"]} == set()
     temporary_path = SkillBank.load(bank_path).temporary_path
     temporary_skills = json.loads(temporary_path.read_text())["skills"] if temporary_path.exists() else []
-    assert {item["skill_id"] for item in temporary_skills} == (set() if all_selected else {first["skill_id"], second["skill_id"]})
+    assert {item["skill_id"] for item in temporary_skills} == {first["skill_id"], second["skill_id"]}
     if not all_selected:
         assert next(item for item in temporary_skills if item["skill_id"] == first["skill_id"])["selection_count"] == 1
 
@@ -993,7 +1078,7 @@ def test_revised_skill_still_requires_successful_replay(tmp_path: Path, monkeypa
             return {"task": "Do the task", "status": "incomplete", "completion_satisfied": False,
                     "rounds": [{"round_index": 1, "plan_text": "Attempted task"}],
                     "skill_learning": {"action": "REVISE_SKILL", "task_tokens": 100}}, output
-        assert json.loads(bank_path.read_text())["skills"] == []
+        assert [item["version"] for item in json.loads(bank_path.read_text())["skills"]] == ([1] if old_status == "validated" else [])
         staged_bank = SkillBank.load(bank_path)
         assert staged_bank.skills[0]["version"] == 2
         assert staged_bank.shadowed_skills[0]["version"] == 1
@@ -1022,14 +1107,11 @@ def test_revised_skill_still_requires_successful_replay(tmp_path: Path, monkeypa
     assert bank.skills[0]["update_count"] == 1
     assert (bank.skills[0]["selection_count"], bank.skills[0]["success_count"]) == (
         1, int(candidate_complete))
-    assert bank.skills[0]["status"] == ("validated" if candidate_complete else "provisional")
-    if not candidate_complete:
-        assert json.loads(bank_path.read_text())["skills"] == []
-        assert bank.shadowed_skills[0]["version"] == 1
-        assert (bank.shadowed_skills[0]["selection_count"], bank.shadowed_skills[0]["success_count"]) == (5, 2)
-    else:
-        assert (bank.history[0]["skill"]["selection_count"], bank.history[0]["skill"]["success_count"]) == (5, 2)
-    assert len(bank.history) == int(candidate_complete)
+    assert bank.skills[0]["status"] == "provisional"
+    assert [item["version"] for item in json.loads(bank_path.read_text())["skills"]] == ([1] if old_status == "validated" else [])
+    assert bank.shadowed_skills[0]["version"] == 1
+    assert (bank.shadowed_skills[0]["selection_count"], bank.shadowed_skills[0]["success_count"]) == (5, 2)
+    assert len(bank.history) == 0
 
 
 @pytest.mark.parametrize("select_both", [True, False])
@@ -1085,7 +1167,7 @@ def test_training_driver_replays_mixed_new_and_revised_skills_once(
     assert set(result["candidate_ids"]) == {old["skill_id"], new["skill_id"]}
     bank = SkillBank.load(bank_path)
     assert {item["skill_id"] for item in bank.skills} == {old["skill_id"], new["skill_id"]}
-    assert all(item["status"] == ("validated" if select_both else "provisional") for item in bank.skills)
+    assert all(item["status"] == "provisional" for item in bank.skills)
 
 
 def test_harbor_exception_surfaces_even_with_zero_exit_and_stale_report(tmp_path: Path, monkeypatch) -> None:

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
 from lh_harness.eval_terminal_bench_pro_original import (
+    _run_harbor,
     _write_task_record,
     _write_config,
     main,
@@ -152,7 +156,10 @@ def test_template_is_reloaded_for_each_task(tmp_path: Path, monkeypatch) -> None
     write_template(7200)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
-    monkeypatch.delenv("LH_CLAUDE_OFFLINE_BINARY", raising=False)
+    cached = tmp_path / "claude"
+    cached.write_text("#!/bin/sh\necho '2.1.176 (Claude Code)'\n")
+    cached.chmod(0o755)
+    monkeypatch.setenv("LH_CLAUDE_OFFLINE_BINARY", str(cached))
     configs = []
 
     def fake_run(config_path, job_dir, use_build_proxy):
@@ -167,3 +174,76 @@ def test_template_is_reloaded_for_each_task(tmp_path: Path, monkeypatch) -> None
     assert main(["--dataset", str(dataset), "--template", str(template),
                  "--output", str(tmp_path / "output")]) == 0
     assert [config["agents"][0]["override_timeout_sec"] for config in configs] == [7200, 18000]
+
+
+def test_original_eval_reuses_archived_claude_cache(tmp_path: Path, monkeypatch) -> None:
+    dataset = tmp_path / "dataset"
+    task = dataset / "sample-task"
+    task.mkdir(parents=True)
+    (task / "task.toml").write_text("")
+    (task / "instruction.md").write_text("")
+    template = tmp_path / "template.yaml"
+    template.write_text(yaml.safe_dump({
+        "environment": {"type": "docker"}, "agents": [{"kwargs": {}}],
+        "verifier": {}, "datasets": [],
+    }))
+    output = tmp_path / "output"
+    cached = output / "his" / "previous-run" / "jobs" / "claude_code_cache" / "2.1.176" / "claude"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("#!/bin/sh\necho '2.1.176 (Claude Code)'\n")
+    cached.chmod(0o755)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
+    monkeypatch.delenv("LH_CLAUDE_OFFLINE_BINARY", raising=False)
+    observed = []
+
+    def fake_run(config_path, job_dir, use_build_proxy):
+        del job_dir, use_build_proxy
+        observed.append(yaml.safe_load(config_path.read_text()))
+        return 0, {"task_name": "sample-task", "verifier_result": {"rewards": {"reward": 0.0}}}, config_path, None
+
+    monkeypatch.setattr("lh_harness.eval_terminal_bench_pro_original._run_harbor", fake_run)
+    assert main(["--dataset", str(dataset), "--template", str(template),
+                 "--output", str(output / "original")]) == 0
+    assert observed[0]["agents"][0]["kwargs"]["offline_claude_binary"] is True
+    assert any(Path(path).name == "docker_claude_offline.yaml"
+               for path in observed[0]["environment"]["extra_docker_compose"])
+    assert os.environ["LH_CLAUDE_OFFLINE_BINARY"] == str(cached.resolve())
+
+
+def test_harbor_child_can_import_original_harness_agent(tmp_path: Path, monkeypatch) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("PYTHONPATH", str(repo / "src"))
+    observed = {}
+
+    def fake_run(args, *, check, env):
+        observed["args"] = args
+        observed["pythonpath"] = env["PYTHONPATH"].split(os.pathsep)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("lh_harness.eval_terminal_bench_pro_original.subprocess.run", fake_run)
+    assert _run_harbor(tmp_path / "task--run.yaml", tmp_path / "job", False)[0] == 0
+    assert observed["args"] == ["harbor", "run", "-c", str(tmp_path / "task--run.yaml")]
+    assert str(repo / "src") in observed["pythonpath"]
+    assert str(repo / "eval/TB-harness/Harness/src") in observed["pythonpath"]
+
+
+def test_original_wrapper_logs_to_selected_output(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_conda = bin_dir / "conda"
+    fake_conda.write_text("#!/bin/sh\nprintf 'fake conda ran\\n'\n")
+    fake_conda.chmod(0o755)
+    output = tmp_path / "custom-output"
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+               ANTHROPIC_API_KEY="test", ANTHROPIC_BASE_URL="https://example.invalid")
+    completed = subprocess.run(
+        ["bash", str(repo / "evaluation/run_original_harness_terminal_bench_pro.sh"),
+         "--output", str(output), "--dry-run"],
+        env=env, check=True, capture_output=True, text=True,
+    )
+    logs = list((output / "console_logs").glob("eval-*.log"))
+    assert len(logs) == 1
+    assert "fake conda ran" in completed.stdout
+    assert "fake conda ran" in logs[0].read_text()

@@ -28,6 +28,9 @@ from .skill_prompt_texts import (
     ROUTER_REPAIR_PROMPT_EN,
     SKILL_BUILDER_PROMPT_EN,
     REVISION_PRESERVATION_REVIEW_PROMPT_EN,
+    EVOLUTION_PLANNER_PROMPT_EN, CREATE_SKILL_BUILDER_PROMPT_EN,
+    REVISE_SKILL_BUILDER_PROMPT_EN, ROUTER_REPAIR_BUILDER_PROMPT_EN,
+    CREATE_SKILL_SCHEMA_REPAIR_PROMPT_EN, REVISE_SKILL_SCHEMA_REPAIR_PROMPT_EN,
 )
 from .skill_prompt_texts_zh import (
     ROUTER_PROMPT_ZH, SUCCESS_SUMMARIZER_PROMPT_ZH,
@@ -35,7 +38,11 @@ from .skill_prompt_texts_zh import (
     FAILURE_DIAGNOSIS_PROMPT_ZH, ROUTER_REPAIR_PROMPT_ZH,
     SKILL_BUILDER_PROMPT_ZH,
     REVISION_PRESERVATION_REVIEW_PROMPT_ZH,
+    EVOLUTION_PLANNER_PROMPT_ZH, CREATE_SKILL_BUILDER_PROMPT_ZH,
+    REVISE_SKILL_BUILDER_PROMPT_ZH, ROUTER_REPAIR_BUILDER_PROMPT_ZH,
+    CREATE_SKILL_SCHEMA_REPAIR_PROMPT_ZH, REVISE_SKILL_SCHEMA_REPAIR_PROMPT_ZH,
 )
+from .skill_evolution import capability_inventory, preservation_map, validate_plan_shape
 
 ROLES = {"manager", "gui_executor", "cli_executor", "gui_auditor", "cli_auditor"}
 VIEWS = {"manager": "manager", "gui_executor": "executor", "cli_executor": "executor", "gui_auditor": "auditor", "cli_auditor": "auditor"}
@@ -63,6 +70,16 @@ REPAIR_PROMPTS = {"en": ROUTER_REPAIR_PROMPT_EN, "zh": ROUTER_REPAIR_PROMPT_ZH}
 REVISION_REVIEW_PROMPTS = {
     "en": REVISION_PRESERVATION_REVIEW_PROMPT_EN,
     "zh": REVISION_PRESERVATION_REVIEW_PROMPT_ZH,
+}
+EVOLUTION_PROMPTS = {"en": EVOLUTION_PLANNER_PROMPT_EN, "zh": EVOLUTION_PLANNER_PROMPT_ZH}
+CREATE_PROMPTS = {"en": CREATE_SKILL_BUILDER_PROMPT_EN, "zh": CREATE_SKILL_BUILDER_PROMPT_ZH}
+REVISE_PROMPTS = {"en": REVISE_SKILL_BUILDER_PROMPT_EN, "zh": REVISE_SKILL_BUILDER_PROMPT_ZH}
+ROUTER_BUILD_PROMPTS = {"en": ROUTER_REPAIR_BUILDER_PROMPT_EN, "zh": ROUTER_REPAIR_BUILDER_PROMPT_ZH}
+SCHEMA_REPAIR_PROMPTS = {
+    "create_skills": {"en": CREATE_SKILL_SCHEMA_REPAIR_PROMPT_EN,
+                      "zh": CREATE_SKILL_SCHEMA_REPAIR_PROMPT_ZH},
+    "revise_skills": {"en": REVISE_SKILL_SCHEMA_REPAIR_PROMPT_EN,
+                      "zh": REVISE_SKILL_SCHEMA_REPAIR_PROMPT_ZH},
 }
 
 
@@ -108,6 +125,120 @@ async def model_json(agent: AgentAdapter, env: Environment, budget: EpisodeBudge
         raise ModelOutputError(str(exc), raw) from exc
 
 
+async def model_json_with_format_retry(
+    agent: AgentAdapter, env: Environment, budget: EpisodeBudget,
+    system: str, payload: dict[str, Any],
+) -> tuple[dict[str, Any], EpisodeResult]:
+    """Retry one malformed JSON reply against the same evidence and schema."""
+    try:
+        return await model_json(agent, env, budget, system, payload)
+    except ModelOutputError as first:
+        if not (isinstance(first.__cause__, json.JSONDecodeError)
+                or str(first) == "model output must be a JSON object"):
+            raise
+        reminder = (
+            "\n\n上一条响应无法解析为单个完整 JSON 对象。请根据同一输入重新生成完整响应。"
+            "只输出一个 JSON 对象，不要 Markdown、前后文字或多个对象。"
+            "Do not continue or repeat the previous output. "
+            f"JSON error: {first}"
+        )
+        try:
+            return await model_json(agent, env, budget, system + reminder, payload)
+        except ModelOutputError as second:
+            if not (isinstance(second.__cause__, json.JSONDecodeError)
+                    or str(second) == "model output must be a JSON object"):
+                raise
+            raise ModelOutputError(
+                f"JSON format retry failed (first: {first}; retry: {second})",
+                second.raw_output,
+            ) from second
+
+
+def repairable_skill_schema_error(error: ValueError) -> bool:
+    """Retry only structural Builder mistakes, never evidence or safety failures."""
+    message = str(error)
+    return message.startswith((
+        "missing problem_mechanism", "invalid routing_summary", "invalid subcases",
+        "invalid triggers", "invalid exclusions", "invalid compatible_with",
+        "invalid conflicts_with", "Skill needs all three role views",
+        "incomplete role view", "new Skill needs discriminating triggers and exclusions",
+        "problem_mechanism must be in ", "routing_summary must be in ",
+        "subcases must be in ", "triggers must be in ", "exclusions must be in ",
+        "compatible_with must be in ", "conflicts_with must be in ",
+        "Skill role guidance must be in ",
+    ))
+
+
+def normalize_builder_skill_shape(draft: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Map unambiguous aliases and empty optional arrays; leave semantic rewrites to review."""
+    skill = copy.deepcopy(draft)
+    mapped: dict[str, str] = {}
+    aliases = {
+        "problem_mechanism": ("mechanism",),
+        "routing_summary": ("concise_routing_summary", "routing_digest", "routing_brief", "route_summary"),
+        "triggers": ("trigger",),
+        "exclusions": ("exclusion",),
+    }
+    for target, sources in aliases.items():
+        if target in skill:
+            continue
+        for source in sources:
+            value = skill.get(source)
+            if target in {"triggers", "exclusions"} and isinstance(value, str) and value.strip():
+                skill[target] = [value]
+            elif target not in {"triggers", "exclusions"} and isinstance(value, str) and value.strip():
+                skill[target] = value
+            else:
+                continue
+            mapped[target] = source
+            skill.pop(source)
+            break
+    if "roles" not in skill:
+        for source in ("role_views", "tri_role_view"):
+            views = skill.get(source)
+            if (isinstance(views, dict) and set(views) == {"manager", "executor", "auditor"}
+                    and all(isinstance(view, dict) and all(
+                        isinstance(view.get(field), str) and view[field].strip() for field in FIELDS
+                    ) for view in views.values())):
+                skill["roles"] = skill.pop(source)
+                mapped["roles"] = source
+                break
+    for name in ("subcases", "compatible_with", "conflicts_with"):
+        if name not in skill:
+            skill[name] = []
+            mapped[name] = "default_empty_list"
+    return skill, mapped
+
+
+def builder_skill_schema_errors(skill: dict[str, Any], *, new: bool) -> list[str]:
+    """Give the one repair attempt every structural defect, not just the first."""
+    errors: list[str] = []
+    if not isinstance(skill.get("problem_mechanism"), str) or not skill["problem_mechanism"].strip():
+        errors.append("problem_mechanism must be a nonempty string")
+    summary = skill.get("routing_summary")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > ROUTING_SUMMARY_MAX_CHARS:
+        errors.append(f"routing_summary must be a nonempty string of at most {ROUTING_SUMMARY_MAX_CHARS} characters")
+    for name in ("subcases", "triggers", "exclusions", "compatible_with", "conflicts_with"):
+        value = skill.get(name)
+        if not isinstance(value, list) or any(not isinstance(entry, str) for entry in value):
+            errors.append(f"{name} must be an array of strings")
+        elif new and name in {"triggers", "exclusions"} and not value:
+            errors.append(f"{name} must contain a discriminating condition")
+    roles = skill.get("roles")
+    if not isinstance(roles, dict) or set(roles) != {"manager", "executor", "auditor"}:
+        errors.append("roles must contain exactly manager, executor and auditor")
+    if isinstance(roles, dict):
+        for role in ("manager", "executor", "auditor"):
+            view = roles.get(role)
+            if not isinstance(view, dict):
+                errors.append(f"roles.{role} must be an object")
+                continue
+            for field in FIELDS:
+                if not isinstance(view.get(field), str) or not view[field].strip():
+                    errors.append(f"roles.{role}.{field} must be a nonempty string")
+    return errors
+
+
 def validate_skill(skill: dict[str, Any], *, language: str, candidate: bool = False) -> None:
     if language not in {"en", "zh"}:
         raise ValueError("Skill language must be en or zh")
@@ -127,7 +258,8 @@ def validate_skill(skill: dict[str, Any], *, language: str, candidate: bool = Fa
         raise ValueError("invalid Skill interaction modes")
     if skill.get("status") not in ({"candidate"} if candidate else {"provisional", "validated", "verified"}):
         raise ValueError("invalid Skill status")
-    for name in ("selection_count", "success_count", "update_count"):
+    for name in ("selection_count", "success_count", "update_count", "injection_count",
+                 "observed_task_successes", "observed_task_failures"):
         if name in skill and (type(skill[name]) is not int or skill[name] < 0):
             raise ValueError(f"invalid {name}")
     if skill.get("success_count", 0) > skill.get("selection_count", 0):
@@ -168,6 +300,19 @@ def validate_skill(skill: dict[str, Any], *, language: str, candidate: bool = Fa
         raise ValueError("Skill needs provenance and validation records")
     if candidate and not _blank_validation(skill["validation"]):
         raise ValueError("candidate cannot self-validate")
+
+
+def normalize_new_skill_ids(candidate: dict[str, Any], mechanism: str) -> dict[str, str]:
+    """Give a new Skill stable, valid opaque IDs when the Builder uses prose IDs."""
+    replacements: dict[str, str] = {}
+    digest = hashlib.sha256(mechanism.encode("utf-8")).hexdigest()[:16]
+    if not ID_RE.fullmatch(str(candidate.get("skill_id", ""))):
+        replacements["skill_id"] = str(candidate.get("skill_id", ""))
+        candidate["skill_id"] = f"skill_{digest}"
+    if not ID_RE.fullmatch(str(candidate.get("category_id", ""))):
+        replacements["category_id"] = str(candidate.get("category_id", ""))
+        candidate["category_id"] = candidate["skill_id"]
+    return replacements
 
 
 def revision_changed_fields(old: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
@@ -476,6 +621,7 @@ class SkillBank:
     router_prompts: dict[str, str] = field(default_factory=lambda: dict(ROUTER_PROMPTS))
     history: list[dict[str, Any]] = field(default_factory=list)
     shadowed_skills: list[dict[str, Any]] = field(default_factory=list)
+    router_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def temporary_path(self) -> Path:
@@ -522,7 +668,14 @@ class SkillBank:
             validate_skill(skill, language=skill.get("content_language", "") if isinstance(skill, dict) else "")
         active_temporary_ids = {skill["skill_id"] for skill in temporary_skills}
         shadowed = [skill for skill in shadowed if skill["skill_id"] in active_temporary_ids]
-        bank = cls(path, [*data["skills"], *temporary_skills], {**ROUTER_PROMPTS, **migrated_prompts}, data.get("history", []), shadowed)
+        router_candidates = temporary.get("router_candidates", [])
+        if not isinstance(router_candidates, list) or any(
+            not isinstance(item, dict) or item.get("language") not in {"en", "zh"}
+            or not isinstance(item.get("prompt"), str) or not item["prompt"].strip()
+            or item.get("status") not in {"provisional", "quarantined"} for item in router_candidates
+        ):
+            raise ValueError("invalid provisional Router candidates")
+        bank = cls(path, [*data["skills"], *temporary_skills], {**ROUTER_PROMPTS, **migrated_prompts}, data.get("history", []), shadowed, router_candidates)
         if not isinstance(bank.history, list):
             raise ValueError("invalid SkillBank history")
         for entry in bank.history:
@@ -558,10 +711,13 @@ class SkillBank:
             skill.setdefault("update_count", skill["version"] - 1)
             if skill["skill_id"] in ids:
                 old = regular.get(skill["skill_id"])
+                previous = next((item for item in bank.shadowed_skills
+                                 if item["skill_id"] == skill["skill_id"]
+                                 and item["version"] == skill.get("version_parent")), old)
                 if (skill["status"] != "provisional" or old is None
                         or old["status"] not in {"validated", "verified"}
-                        or skill["version"] != old["version"] + 1
-                        or skill.get("version_parent") != old["version"]):
+                        or previous is None or skill["version"] != previous["version"] + 1
+                        or skill.get("version_parent") != previous["version"]):
                     raise ValueError("duplicate Skill ID")
                 if not any(s["skill_id"] == old["skill_id"] and s["version"] == old["version"] for s in bank.shadowed_skills):
                     bank.shadowed_skills.append(old)
@@ -597,14 +753,16 @@ class SkillBank:
                 historical_skill.setdefault("update_count", historical_skill["version"] - 1)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = [s for s in self.skills if s["status"] == "provisional"]
-        if temporary or self.shadowed_skills:
+        if temporary or self.shadowed_skills or self.router_candidates:
             temporary_tmp = self.temporary_path.with_suffix(self.path.suffix + ".tmp")
-            temporary_tmp.write_text(json.dumps({"schema_version": 1, "skills": temporary, "shadowed_skills": self.shadowed_skills}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary_tmp.write_text(json.dumps({"schema_version": 1, "skills": temporary, "shadowed_skills": self.shadowed_skills, "router_candidates": self.router_candidates}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             temporary_tmp.replace(self.temporary_path)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps({"schema_version": 1, "skills": [s for s in self.skills if s["status"] in {"validated", "verified"}], "router_prompts": self.router_prompts, "history": self.history}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        stable_skills = [s for s in [*self.skills, *self.shadowed_skills]
+                         if s["status"] in {"validated", "verified"}]
+        tmp.write_text(json.dumps({"schema_version": 1, "skills": stable_skills, "router_prompts": self.router_prompts, "history": self.history}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp.replace(self.path)
-        if not temporary and not self.shadowed_skills and self.temporary_path.exists():
+        if not temporary and not self.shadowed_skills and not self.router_candidates and self.temporary_path.exists():
             self.temporary_path.unlink()
 
     def eligible(
@@ -621,6 +779,8 @@ class SkillBank:
         candidate_ids = {skill["skill_id"] for skill in candidates}
         active = [s for s in self.skills if s["skill_id"] not in candidate_ids]
         for skill in [*active, *candidates]:
+            if skill.get("lifecycle") == "quarantined":
+                continue
             if skill["status"] not in ({"provisional", "validated", "verified", "candidate"} if candidate else {"provisional", "validated", "verified"}):
                 continue
             if skill["benchmark_scope"] not in ("shared", benchmark_id):
@@ -645,6 +805,147 @@ class SkillBank:
                 }], language)),
             })
         return result
+
+    def record_independent_validation(self, skill_id: str, version: int, result: dict[str, Any]) -> None:
+        """Record a candidate-only contrast; observations never promote by themselves."""
+        skill = next((s for s in self.skills if s["skill_id"] == skill_id and s["version"] == version), None)
+        if skill is None or skill["status"] != "provisional":
+            raise ValueError("independent validation requires a provisional Skill version")
+        if (not isinstance(result, dict) or not isinstance(result.get("task_id"), str)
+                or type(result.get("candidate_selected")) is not bool
+                or type(result.get("hard_constraint_regression")) is not bool
+                or type(result.get("baseline_success")) is not bool
+                or type(result.get("candidate_success")) is not bool):
+            raise ValueError("incomplete independent validation result")
+        skill.setdefault("independent_validation_results", []).append(copy.deepcopy(result))
+        if result.get("verified_progress") is True:
+            skill.setdefault("verified_progress_evidence", []).append(result["task_id"])
+        if result["candidate_selected"] and (result["hard_constraint_regression"] or
+                result["baseline_success"] and not result["candidate_success"]):
+            skill.setdefault("negative_evidence", []).append(copy.deepcopy(result))
+        skill["evidence_uncertainty"] = "independent_evidence_limited"
+        if result["hard_constraint_regression"]:
+            skill["lifecycle"] = "quarantined"
+        self.save()
+
+    def promote_skill(self, skill_id: str, version: int) -> None:
+        skill = next((s for s in self.skills if s["skill_id"] == skill_id and s["version"] == version), None)
+        if skill is None or skill["status"] != "provisional" or skill.get("lifecycle") == "quarantined":
+            raise ValueError("Skill is not eligible for promotion")
+        results = skill.get("independent_validation_results", [])
+        positive_tasks = {item["task_id"] for item in results
+                          if item.get("candidate_selected") and not item.get("hard_constraint_regression")
+                          and ((item.get("candidate_success") and not item.get("baseline_success"))
+                               or item.get("verified_progress") is True)}
+        if len(positive_tasks) < 2 or any(item.get("hard_constraint_regression") for item in results):
+            raise ValueError("insufficient independent positive evidence")
+        old_versions = [s for s in self.shadowed_skills if s["skill_id"] == skill_id]
+        if old_versions:
+            self.history.extend({"kind": "skill", "skill": copy.deepcopy(old)}
+                                for old in old_versions)
+            self.shadowed_skills = [s for s in self.shadowed_skills if s["skill_id"] != skill_id]
+        skill["status"] = "validated"
+        skill["lifecycle"] = "validated"
+        skill["evidence_uncertainty"] = "supported_by_independent_contrasts"
+        self.save()
+
+    def record_router_validation(self, language: str, prompt: str, result: dict[str, Any]) -> None:
+        entry = next((item for item in self.router_candidates
+                      if item["language"] == language and item["prompt"] == prompt), None)
+        if entry is None or not isinstance(result, dict) or not isinstance(result.get("task_id"), str):
+            raise ValueError("invalid Router validation")
+        if type(result.get("routing_improved")) is not bool or type(result.get("hard_constraint_regression")) is not bool:
+            raise ValueError("Router validation needs independent routing comparison")
+        entry.setdefault("independent_validation_results", []).append(copy.deepcopy(result))
+        if result["hard_constraint_regression"]:
+            entry["status"] = "quarantined"
+        self.save()
+
+    def promote_router(self, language: str, prompt: str) -> None:
+        entry = next((item for item in self.router_candidates
+                      if item["language"] == language and item["prompt"] == prompt), None)
+        if entry is None or entry["status"] != "provisional":
+            raise ValueError("Router candidate is not provisional")
+        results = entry.get("independent_validation_results", [])
+        positive = {item["task_id"] for item in results if item.get("routing_improved")
+                    and not item.get("hard_constraint_regression")}
+        if len(positive) < 2 or any(item.get("hard_constraint_regression") for item in results):
+            raise ValueError("insufficient independent Router evidence")
+        self.history.append({"kind": "router", "language": language,
+                             "prompt": self.router_prompts[language]})
+        self.router_prompts[language] = prompt
+        self.router_candidates.remove(entry)
+        self.save()
+
+    def rollback_skill(self, skill_id: str) -> None:
+        current = next((s for s in self.skills if s["skill_id"] == skill_id), None)
+        if current is None:
+            raise ValueError("Skill ID is not active")
+        previous = [s for s in self.shadowed_skills if s["skill_id"] == skill_id]
+        historical = [(index, entry["skill"]) for index, entry in enumerate(self.history)
+                      if entry.get("kind") == "skill" and entry["skill"]["skill_id"] == skill_id
+                      and entry["skill"]["version"] < current["version"]]
+        if not previous and not historical and current["status"] != "provisional":
+            raise ValueError("no previous Skill version")
+        self.skills = [s for s in self.skills if s["skill_id"] != skill_id]
+        if previous:
+            stable = [s for s in previous if s["status"] in {"validated", "verified"}]
+            restored = max(stable or previous, key=lambda item: item["version"])
+            self.history.extend({"kind": "skill", "skill": copy.deepcopy(s)}
+                                for s in [current, *previous] if s is not restored)
+            self.shadowed_skills = [s for s in self.shadowed_skills
+                                    if s["skill_id"] != skill_id]
+            self.skills.append(restored)
+        elif historical:
+            index, restored = max(historical, key=lambda pair: pair[1]["version"])
+            self.history.pop(index)
+            self.history.append({"kind": "skill", "skill": copy.deepcopy(current)})
+            self.skills.append(copy.deepcopy(restored))
+        else:
+            self.history.append({"kind": "skill", "skill": copy.deepcopy(current)})
+        self.save()
+
+    def rollback_router(self, language: str) -> None:
+        history = [(index, entry) for index, entry in enumerate(self.history)
+                   if entry.get("kind") == "router" and entry.get("language") == language]
+        if not history:
+            raise ValueError("no previous Router Prompt")
+        index, previous = history[-1]
+        self.history.pop(index)
+        self.history.append({"kind": "router", "language": language,
+                             "prompt": self.router_prompts[language]})
+        self.router_prompts[language] = previous["prompt"]
+        self.save()
+
+    def export_frozen(self, path: str | Path, *, include_provisional: bool = False) -> Path:
+        """Export one version per ID for evaluation; no temporary learning file."""
+        path = Path(path)
+        selected = {skill["skill_id"]: copy.deepcopy(skill) for skill in self.shadowed_skills
+                    if skill["status"] in {"validated", "verified"}}
+        for skill in self.skills:
+            if skill.get("lifecycle") == "quarantined":
+                continue
+            if skill["status"] in {"validated", "verified"} or include_provisional:
+                selected[skill["skill_id"]] = copy.deepcopy(skill)
+        prompts = dict(self.router_prompts)
+        if include_provisional:
+            for entry in self.router_candidates:
+                if entry["status"] == "provisional" and all(
+                    dependency in selected for dependency in entry.get("dependencies", [])
+                ):
+                    prompts[entry["language"]] = entry["prompt"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps({"schema_version": 1, "skills": list(selected.values()),
+                                   "router_prompts": prompts, "history": self.history,
+                                   "freeze_metadata": {"mode": "validated_plus_provisional" if include_provisional else "validated_only",
+                                                       "learning_enabled": False}},
+                                  ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        temporary_path = path.with_name(path.stem + "_temporary" + path.suffix)
+        if temporary_path.exists():
+            temporary_path.unlink()
+        return path
 
 
 def commit_validated_candidate(
@@ -753,11 +1054,23 @@ def record_selected_skill_outcomes(bank: SkillBank, routes: list[dict[str, Any]]
         for item in (route.get("selected_skills") if isinstance(route.get("selected_skills"), list) else [])
         if isinstance(item, dict) and isinstance(item.get("skill_id"), str) and type(item.get("version")) is int
     }
+    injected = {
+        (item.get("skill_id"), item.get("version"))
+        for route in routes if isinstance(route, dict) and route.get("injected_context")
+        for item in (route.get("selected_skills") if isinstance(route.get("selected_skills"), list) else [])
+        if isinstance(item, dict)
+    }
     changed = False
     for skill in bank.skills:
         if (skill["skill_id"], skill["version"]) in selected:
             skill["selection_count"] = skill.get("selection_count", 0) + 1
             skill["success_count"] = skill.get("success_count", 0) + int(success)
+            skill["injection_count"] = skill.get("injection_count", 0) + int((skill["skill_id"], skill["version"]) in injected)
+            field_name = "observed_task_successes" if success else "observed_task_failures"
+            skill[field_name] = skill.get(field_name, 0) + 1
+            skill.setdefault("token_cost", None)  # Unknown until provider usage is attributed.
+            skill.setdefault("independent_validation_results", [])
+            skill.setdefault("evidence_uncertainty", "observational")
             changed = True
     if changed:
         bank.save()
@@ -818,8 +1131,10 @@ def supported_router_error(records: list[dict[str, Any]], assessment: dict[str, 
             error_type == "omission" and target
             and any(card.get("skill_id") == target for card in (record.get("router_input") or {}).get("eligible_skill_cards", []))
             and not any(item.get("skill_id") == target for item in (record.get("selected_skills") or []))
-            or error_type == "wrong_skill" and bool(record.get("selected_skills"))
-            or error_type == "conflict" and len(record.get("selected_skills") or []) >= 2
+            or error_type == "wrong_skill" and target and any(
+                item.get("skill_id") == target for item in (record.get("selected_skills") or []))
+            or error_type == "conflict" and target and len(record.get("selected_skills") or []) >= 2
+            and any(item.get("skill_id") == target for item in (record.get("selected_skills") or []))
         ) for record in records
     )
 
@@ -912,7 +1227,9 @@ def task_reward(report: dict[str, Any], tokens: int | None, *, reference_tokens:
     if type(tokens) is not int or tokens < 0 or reference_tokens <= 0:
         return None
     success = task_success(report, language) if success_override is None else success_override
-    return float(success) - beta * min(1.0, tokens / reference_tokens)
+    # Smooth, strictly increasing cost beyond the reference, bounded by beta
+    # so token savings cannot outweigh a change in task success.
+    return float(success) - beta * (tokens / (reference_tokens + tokens))
 
 
 def accept_candidate(baseline: dict[str, Any], candidate: dict[str, Any], *, baseline_tokens: int | None, candidate_tokens: int | None, reference_tokens: int, effective: bool, hard_constraint_regression: bool, language: str = "en", baseline_success_override: bool | None = None, candidate_success_override: bool | None = None) -> tuple[bool, float | None]:
@@ -994,7 +1311,9 @@ class SkillSession:
                 "Router 候选卡片只包含 routing_summary 和元数据；根据简述选择，选中后才加载角色指导。"
                 "候选验证时，本次任务中每个适用的候选 Skill 都必须至少被选中一次，整组才能通过。"
             )
-            router_prompt = (self.router_prompt_override or self.bank.router_prompts[self.language]) + "\n\n" + card_contract + "\n\nINPUT JSON:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+            provisional_router = next((item["prompt"] for item in reversed(self.bank.router_candidates)
+                                       if item["language"] == self.language and item["status"] == "provisional"), None)
+            router_prompt = (self.router_prompt_override or provisional_router or self.bank.router_prompts[self.language]) + "\n\n" + card_contract + "\n\nINPUT JSON:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
             result = await self.agent.run_episode(router_prompt, self.env, self.budget)
             self.token_counts.append(token_usage(result))
             record["router_raw_output"] = str(result.metadata.get("assistant_visible_output") or visible_output(result.actions_log))
@@ -1051,6 +1370,269 @@ class SkillSession:
         _ensure_dir_nofollow(self.log_dir)
         payload = {"kind": kind, "candidate": candidate, "assessment": assessment, "validation": validation}
         _atomic_bytes_write(self.log_dir / "skill_candidate.json", (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+    async def _finish_evolution(
+        self, plan: dict[str, Any], *, report: dict[str, Any], trajectory: dict[str, Any],
+        skill_index: list[dict[str, Any]], status: dict[str, Any], task_id: str,
+        replay: Replay | None, reliable_experience: bool,
+    ) -> dict[str, Any]:
+        """Process independent plan items; a bad item cannot discard its siblings."""
+        try:
+            validate_plan_shape(plan)
+        except ValueError as exc:
+            status.update(error_stage="evolution_plan", learning_error=str(exc))
+            return status
+        status.update(action="EVOLVE", evolution_plan=plan, learning_phase="evolution_builders")
+        rounds = trajectory["rounds"]
+        available = {item["round_id"] for item in rounds}
+        outcomes: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        built_ids: set[str] = set()
+
+        def cited(item: dict[str, Any], *, require_round: bool) -> list[str]:
+            refs = item.get("evidence_refs")
+            if not isinstance(refs, list) or not refs or any(
+                not isinstance(ref, str) or not valid_trajectory_evidence_ref(ref, available)
+                for ref in refs
+            ):
+                raise ValueError("plan item has absent or invalid trajectory evidence")
+            by_round = {round_["round_id"]: round_ for round_ in rounds}
+            for ref in refs:
+                if ref.startswith("final_report:"):
+                    field_name = ref.split(":", 1)[1]
+                    if not trajectory["final_report"].get(field_name):
+                        raise ValueError("plan cites absent final report field")
+                elif ref.startswith("router_inputs_and_outputs"):
+                    if not trajectory["router_inputs_and_outputs"]:
+                        raise ValueError("plan cites absent routing record")
+                elif ":" in ref and ref.startswith("round_"):
+                    round_id = resolve_trajectory_round_ref(ref, available)
+                    field_name = ref.split(":", 1)[1]
+                    if field_name not in by_round[round_id] or not by_round[round_id][field_name]:
+                        raise ValueError("plan cites absent round field")
+            round_ids = list(dict.fromkeys(
+                resolved for ref in refs
+                for resolved in [resolve_trajectory_round_ref(ref, available)] if resolved
+            ))
+            if require_round and not round_ids:
+                raise ValueError("Skill plan needs a real round reference")
+            return round_ids
+
+        for branch, builder in (("create_skills", CREATE_PROMPTS[self.language]),
+                                ("revise_skills", REVISE_PROMPTS[self.language])):
+            for index, item in enumerate(plan[branch]):
+                outcome: dict[str, Any] = {"branch": branch, "index": index, "status": "rejected"}
+                outcomes.append(outcome)
+                try:
+                    if not isinstance(item, dict):
+                        raise ValueError("plan item must be an object")
+                    refs = cited(item, require_round=True)
+                    if not reliable_experience:
+                        raise ValueError("Skill update lacks reliable extracted experience")
+                    old = None
+                    if branch == "revise_skills":
+                        for repair in item.get("fix_defects", []):
+                            if isinstance(repair, dict):
+                                cited(repair, require_round=True)
+                        old = next((s for s in self.bank.skills if s["skill_id"] == item.get("target_skill_id")), None)
+                        if old is None or old["status"] == "provisional":
+                            raise ValueError("revision requires an active stable target")
+                        if not any(record.get("injected_context") and any(
+                            selected.get("skill_id") == old["skill_id"] and selected.get("version") == old["version"]
+                            for selected in record.get("selected_skills", [])
+                        ) for record in self.records):
+                            raise ValueError("revision target was not injected")
+                    payload = {
+                        "plan_item": item,
+                        "evidence_excerpts": select_trajectory_evidence(rounds, evidence_refs=refs, limit=max(6, len(refs))),
+                        "old_skill": old,
+                        "old_capabilities": capability_inventory(old) if old else None,
+                        "relevant_skill_cards": skill_index if old is None else None,
+                        "content_language": self.language, "benchmark_scope": self.benchmark_id,
+                        "interaction_modes": [self.interaction_mode], "skill_token_budget": self.token_budget,
+                    }
+                    response, result = await model_json_with_format_retry(
+                        self.agent, self.env, self.budget, builder, payload)
+                    outcome["builder_tokens"] = token_usage(result)
+                    if response.get("rejected_reason"):
+                        raise ValueError(str(response["rejected_reason"]))
+                    draft = response.get("skill")
+                    for schema_attempt in range(2):
+                        if not isinstance(draft, dict):
+                            raise ValueError("Builder omitted Skill")
+                        shaped_draft, normalized_aliases = normalize_builder_skill_shape(draft)
+                        if normalized_aliases:
+                            outcome.setdefault("schema_normalizations", {}).update(normalized_aliases)
+                        candidate = {**shaped_draft, "status": "candidate", "content_language": self.language,
+                                     "provenance": {"task_id": task_id, "run_id": str(self.log_dir),
+                                                    "evidence_refs": item["evidence_refs"]},
+                                     "validation": {}, "selection_count": 0, "success_count": 0}
+                        if old is None:
+                            candidate.update(version=1, version_parent=None,
+                                             benchmark_scope=self.benchmark_id,
+                                             interaction_modes=[self.interaction_mode], update_count=0)
+                            normalized_ids = normalize_new_skill_ids(candidate, str(item.get("mechanism", "")))
+                            if any(s["skill_id"] == candidate.get("skill_id") for s in self.bank.skills):
+                                raise ValueError("new Skill ID already exists")
+                            if not item.get("mechanism") or not item.get("general_strategy"):
+                                raise ValueError("new Skill plan lacks concrete mechanism or strategy")
+                            if any(str(s.get("problem_mechanism", "")).casefold().strip()
+                                   == str(candidate.get("problem_mechanism", "")).casefold().strip()
+                                   for s in self.bank.skills):
+                                raise ValueError("new Skill duplicates an existing mechanism")
+                        else:
+                            if (candidate.get("skill_id") != old["skill_id"]
+                                    or candidate.get("category_id") != old["category_id"]
+                                    or candidate.get("version") != old["version"] + 1
+                                    or candidate.get("version_parent") != old["version"]
+                                    or candidate.get("benchmark_scope") != old["benchmark_scope"]):
+                                raise ValueError("revision version lineage or scope mismatch")
+                            candidate["update_count"] = old.get("update_count", old["version"] - 1) + 1
+                        candidate.setdefault("routing_summary", _fallback_routing_summary(candidate, self.language))
+                        try:
+                            validate_skill(candidate, language=self.language, candidate=True)
+                            if old is None and (not candidate["triggers"] or not candidate["exclusions"]):
+                                raise ValueError("new Skill needs discriminating triggers and exclusions")
+                            validate_single_skill_budget(candidate, language=self.language,
+                                                         token_budget=self.token_budget)
+                        except ValueError as schema_error:
+                            if schema_attempt or not repairable_skill_schema_error(schema_error):
+                                raise
+                            outcome["schema_repair_error"] = str(schema_error)
+                            schema_errors = builder_skill_schema_errors(candidate, new=old is None)
+                            if str(schema_error) not in schema_errors:
+                                schema_errors.insert(0, str(schema_error))
+                            repair, repair_result = await model_json_with_format_retry(
+                                self.agent, self.env, self.budget,
+                                SCHEMA_REPAIR_PROMPTS[branch][self.language], {
+                                    "draft_skill": draft, "plan_item": item,
+                                    "normalized_draft_skill": shaped_draft,
+                                    "schema_error": str(schema_error),
+                                    "schema_errors": schema_errors,
+                                    "old_skill": old, "content_language": self.language,
+                                },
+                            )
+                            outcome["schema_repair_tokens"] = token_usage(repair_result)
+                            if repair.get("rejected_reason"):
+                                raise ValueError(str(repair["rejected_reason"]))
+                            draft = repair.get("skill")
+                            continue
+                        if old is None and normalized_ids:
+                            outcome["normalized_ids"] = normalized_ids
+                        break
+                    if candidate["skill_id"] in built_ids:
+                        raise ValueError("duplicate candidate Skill ID")
+                    if old is not None:
+                        mapping = preservation_map(old, candidate, item)
+                        changed = revision_changed_fields(old, candidate)
+                        if changed:
+                            review, review_result = await model_json(
+                                self.agent, self.env, self.budget, REVISION_REVIEW_PROMPTS[self.language],
+                                {"old_skill": old, "revised_skill": candidate,
+                                 "old_capabilities": capability_inventory(old),
+                                 "changed_fields": changed, "plan_item": item,
+                                 "evidence_excerpts": payload["evidence_excerpts"]},
+                            )
+                            validate_revision_preservation_review(review, changed)
+                            mapping["llm_review"] = review
+                            outcome["review_tokens"] = token_usage(review_result)
+                        candidate["capability_mapping"] = mapping
+                    stage_skill_candidate(self.bank, candidate, save=False)
+                    built_ids.add(candidate["skill_id"])
+                    candidates.append(candidate)
+                    outcome.update(status="provisional", skill_id=candidate["skill_id"],
+                                   version=candidate["version"], evidence_refs=item["evidence_refs"])
+                except Exception as exc:
+                    outcome["reason"] = str(exc)
+                    if isinstance(exc, ModelOutputError):
+                        outcome["raw_model_output"] = exc.raw_output
+        router_items = []
+        for index, item in enumerate(plan["update_router"]):
+            outcome = {"branch": "update_router", "index": index, "status": "rejected"}
+            outcomes.append(outcome)
+            try:
+                if not isinstance(item, dict):
+                    raise ValueError("Router plan item must be an object")
+                cited(item, require_round=False)
+                dependencies = item.get("depends_on_skill_ids", [])
+                if not isinstance(dependencies, list) or any(dep not in built_ids for dep in dependencies):
+                    raise ValueError("Router dependency was not staged")
+                affected = item.get("affected_skill_ids", [])
+                if not isinstance(affected, list) or not affected:
+                    raise ValueError("Router repair needs affected existing Skill IDs")
+                for target in affected:
+                    if not supported_router_error(self.records, {
+                        "router_error_type": item.get("router_error_type"), "target_skill_id": target,
+                    }):
+                        raise ValueError("Router repair lacks a recorded selection error")
+                router_items.append(item)
+                outcome.update(status="planned", evidence_refs=item["evidence_refs"])
+            except Exception as exc:
+                outcome["reason"] = str(exc)
+        router_candidate = None
+        if router_items:
+            try:
+                response, result = await model_json(self.agent, self.env, self.budget,
+                    ROUTER_BUILD_PROMPTS[self.language], {
+                        "old_router_prompt": self.bank.router_prompts[self.language],
+                        "repair_items": router_items,
+                        "routing_records": trajectory["router_inputs_and_outputs"],
+                        "relevant_skill_cards": skill_index,
+                    })
+                router_candidate = response.get("candidate_router_prompt")
+                if (not isinstance(router_candidate, str) or not router_candidate.strip()
+                        or router_candidate == self.bank.router_prompts[self.language]
+                        or self.language == "en" and NON_ENGLISH_SCRIPT_RE.search(router_candidate)
+                        or self.language == "zh" and not HAN_RE.search(router_candidate)):
+                    raise ValueError("invalid Router candidate")
+                self.bank.router_candidates.append({
+                    "language": self.language, "prompt": router_candidate, "status": "provisional",
+                    "evidence_refs": [ref for item in router_items for ref in item["evidence_refs"]],
+                    "dependencies": sorted({dep for item in router_items for dep in item.get("depends_on_skill_ids", [])}),
+                    "validation": {"independent_result": None},
+                })
+                for outcome in outcomes:
+                    if outcome["branch"] == "update_router" and outcome["status"] == "planned":
+                        outcome.update(status="provisional", builder_tokens=token_usage(result))
+            except Exception as exc:
+                for outcome in outcomes:
+                    if outcome["branch"] == "update_router" and outcome["status"] == "planned":
+                        outcome.update(status="rejected", reason=str(exc))
+        self.bank.save()
+        status["request_outcomes"] = outcomes
+        status["candidates"] = candidates
+        status["router_candidate"] = router_candidate
+        has_candidate = bool(candidates or router_candidate)
+        status["validation"] = ("provisional_pending_independent_validation"
+                                if has_candidate else "not_requested")
+        status["learning_phase"] = "provisional_staged" if has_candidate else "no_candidate"
+        if has_candidate:
+            payload = {"kind": "evolution", "candidate": candidates,
+                       "router_candidate": router_candidate, "assessment": plan,
+                       "request_outcomes": outcomes, "validation": status["validation"]}
+            _ensure_dir_nofollow(self.log_dir)
+            _atomic_bytes_write(self.log_dir / "skill_candidate.json",
+                (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        if replay is not None and (candidates or router_candidate):
+            # A shared replay is evidence about the combination. It cannot
+            # establish independent contribution of each changed component.
+            try:
+                result = await replay({"kind": "evolution", "candidate": candidates,
+                                       "router_candidate": router_candidate, "mode": "candidate_validation"})
+                observation = {"scope": "combination", "report": result.get("report"),
+                               "task_tokens": result.get("task_tokens"),
+                               "effective": result.get("effective"),
+                               "hard_constraint_regression": result.get("hard_constraint_regression"),
+                               "independent_causal_credit": False}
+                status["validation"] = observation
+                for candidate in candidates:
+                    staged = next(s for s in self.bank.skills if s["skill_id"] == candidate["skill_id"])
+                    staged.setdefault("validation", {}).setdefault("combination_observations", []).append(observation)
+                self.bank.save()
+            except Exception as exc:
+                status["validation"] = {"scope": "combination", "error": str(exc),
+                                        "independent_causal_credit": False}
+        return status
 
     async def finish(self, report: dict[str, Any], *, replay: Replay | None = None, reference_tokens: int = 100_000) -> dict[str, Any]:
         """Learn candidate Skills; commit each only after a full-task replay.
@@ -1215,11 +1797,12 @@ class SkillSession:
                 },
             }
         )
-        prompt = SUMMARY_PROMPTS[self.language] if success else DIAGNOSIS_PROMPTS[self.language]
-        status["learning_phase"] = "success_summary" if success else "failure_diagnosis"
+        prompt = EVOLUTION_PROMPTS[self.language]
+        status["learning_phase"] = "evolution_planner"
         status["diagnosis_attempted"] = not success
         try:
-            assessment, _ = await model_json(self.agent, self.env, self.budget, prompt, assessment_input)
+            assessment, _ = await model_json_with_format_retry(
+                self.agent, self.env, self.budget, prompt, assessment_input)
         except Exception as exc:
             status["error_stage"] = status["learning_phase"]
             status["learning_error"] = str(exc)
@@ -1227,6 +1810,13 @@ class SkillSession:
                 status["raw_model_output"] = exc.raw_output
             return status
         status["assessment_raw"] = copy.deepcopy(assessment)
+        if any(key in assessment for key in ("create_skills", "revise_skills", "update_router")):
+            status["assessment"] = assessment
+            return await self._finish_evolution(
+                assessment, report=report, trajectory=trajectory, skill_index=skill_index,
+                status=status, task_id=task_id, replay=replay,
+                reliable_experience=reliable_experience,
+            )
         assessment, artifact_refs = split_assessment_artifact_refs(
             assessment, report, {item["round_id"] for item in trajectory["rounds"]},
         )
@@ -1638,6 +2228,8 @@ class SkillSession:
             )
             validation = {
                 "accepted": accepted, "reward_delta": delta, "effective": effective,
+                "independent_causal_credit": bool(replay_result.get("independent_candidate_validation") is True and len(items) == 1),
+                "promoted": bool(accepted and replay_result.get("independent_candidate_validation") is True and len(items) == 1),
                 "selected_candidates": selected,
                 "baseline_success": task_success(report, self.language),
                 "candidate_success": task_success(candidate_report, self.language),
@@ -1645,12 +2237,14 @@ class SkillSession:
                 "hard_constraint_regression": replay_result["hard_constraint_regression"],
             }
             for item in items:
-                if accepted:
+                if accepted and validation["independent_causal_credit"]:
                     commit_validated_candidate(self.bank, kind, item, language=self.language,
                                                validation=validation, save=False)
                 elif kind == "skill":
                     staged = next(s for s in self.bank.skills if s["skill_id"] == item["skill_id"])
                     staged["validation"] = validation
+                    if replay_result["hard_constraint_regression"]:
+                        staged["lifecycle"] = "quarantined"
             self.bank.save()
         except Exception as exc:
             status["error_stage"] = "candidate_replay"

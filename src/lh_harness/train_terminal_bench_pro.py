@@ -13,7 +13,6 @@ import json
 import logging
 import math
 import os
-import re
 import subprocess
 import sys
 import uuid
@@ -21,10 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from .auditor_agent import parse_audit_report
+from .claude_cache import find_cached_claude_binary as _find_cached_claude_binary
 from .harbor_url import claude_code_upstream_base_url
 from .skill_learning import SkillBank, accept_candidate, commit_validated_candidate, record_selected_skill_outcomes, resolve_trajectory_round_ref, stage_skill_candidate, task_success, validate_skill
 from .training_provenance import ProvenanceWriter
 from .training_results import write_training_per_task_csv
+from .verifier_uv import add_verifier_uv, verifier_uv_host_env
 
 
 logger = logging.getLogger(__name__)
@@ -37,28 +38,6 @@ def discover_tasks(root: Path) -> list[str]:
         path.name for path in root.iterdir()
         if path.is_dir() and (path / "task.toml").is_file() and (path / "instruction.md").is_file()
     )
-
-
-def _find_cached_claude_binary(output_root: Path, version: str) -> Path | None:
-    """Reuse an exact local Claude Code release across training outputs."""
-    if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
-        return None
-    preferred = output_root / "jobs" / "claude_code_cache" / version / "claude"
-    siblings = sorted(output_root.parent.glob(f"*/jobs/claude_code_cache/{version}/claude"))
-    for candidate in dict.fromkeys([preferred, *siblings]):
-        if not candidate.is_file() or not os.access(candidate, os.X_OK):
-            continue
-        try:
-            completed = subprocess.run(
-                [str(candidate), "--version"], capture_output=True, text=True,
-                timeout=15, check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        match = re.search(r"\b(\d+\.\d+\.\d+)\b", completed.stdout)
-        if completed.returncode == 0 and match and match.group(1) == version:
-            return candidate.resolve()
-    return None
 
 
 def _write_trial_config(
@@ -91,6 +70,7 @@ def _write_trial_config(
         # available without changing the task source or runtime networking.
         proxy_compose = Path(__file__).resolve().parents[2] / "training" / "docker_build_proxy.yaml"
         config.setdefault("environment", {}).setdefault("extra_docker_compose", []).append(str(proxy_compose))
+    add_verifier_uv(config, dataset=dataset, task=task)
     config["agents"][0].setdefault("env", {})["LH_HARNESS_MODEL_IO_TRACE"] = "1"
     kwargs = config["agents"][0]["kwargs"]
     language = kwargs.get("prompt_language", "en")
@@ -118,7 +98,7 @@ def _run_trial(config_path: Path, jobs_dir: Path) -> tuple[dict[str, Any], Path]
     # Harbor applies AgentConfig.env as a scoped environment that overrides
     # the role adapter's per-exec ANTHROPIC_BASE_URL. Normalize the value
     # before Harbor expands ${ANTHROPIC_BASE_URL} into that scoped environment.
-    harbor_env = os.environ.copy()
+    harbor_env = verifier_uv_host_env(trial_config)
     if harbor_env.get("ANTHROPIC_BASE_URL"):
         harbor_env["ANTHROPIC_BASE_URL"] = claude_code_upstream_base_url(harbor_env["ANTHROPIC_BASE_URL"])
     proxy_overrides = trial_config.get("environment", {}).get("extra_docker_compose", [])
@@ -157,6 +137,11 @@ def _learning_reason(learning: dict[str, Any]) -> str:
         return "legacy_unverified_no_change"
     if learning.get("diagnosis_attempted") is False and not learning.get("action"):
         return "diagnosis_status_unknown"
+    if learning.get("action") == "EVOLVE":
+        requests = learning.get("request_outcomes") or []
+        if any(isinstance(item, dict) and item.get("status") == "provisional" for item in requests):
+            return "evolution_candidate_artifact_missing"
+        return "evolution_candidates_rejected" if requests else "evolution_no_update"
     return {
         "NO_CHANGE": "diagnosis_no_change",
         "INSUFFICIENT_EVIDENCE": "diagnosis_insufficient_evidence",
@@ -506,6 +491,7 @@ def _train_skill_candidates(
     )
     validation = {
         "accepted": accepted, "reward_delta": delta, "effective": effective,
+        "scope": "source_task_combination", "independent_causal_credit": False,
         "selected_candidates": selected,
         "score_source": "harbor_verifier" if verifier_scores_available else "harness_fallback",
         "baseline_success": baseline_correct if verifier_scores_available else task_success(baseline, training_language),
@@ -516,31 +502,95 @@ def _train_skill_candidates(
         "hard_constraint_regression": hard_regression,
     }
     for item in candidates:
-        if accepted:
-            commit_validated_candidate(bank, "skill", item, language=training_language,
-                                       validation=validation, save=False)
-        else:
-            staged = next(skill for skill in bank.skills if skill["skill_id"] == item["skill_id"])
-            staged["validation"] = validation
+        staged = next(skill for skill in bank.skills if skill["skill_id"] == item["skill_id"])
+        staged["validation"] = validation
+        if hard_regression:
+            staged["lifecycle"] = "quarantined"
     bank.save()
     for item in candidates:
         provenance.candidate("assessed", {**proposal, "candidate": item, "validation": validation},
                              source_path=proposal_path)
-    if accepted:
-        provenance.bank_snapshot("after_candidate_commit", bank)
+    provenance.bank_snapshot("after_candidate_observation", bank)
     outcomes = [{"skill_id": item["skill_id"], "version": item["version"],
-                 "selected": selected[item["skill_id"]], "bank_committed": accepted}
+                 "selected": selected[item["skill_id"]], "bank_committed": False}
                 for item in candidates]
     result.update(accepted=accepted, validation=validation, candidates=outcomes,
                   candidate_status=candidate_report.get("status"),
                   candidate_report_path=str(candidate_output / "lh_harness" / "report.json"))
-    if not accepted:
-        result["reason"] = "candidate batch failed full-task acceptance checks"
+    result["reason"] = "provisional_pending_independent_validation" if accepted else "candidate batch failed full-task acceptance checks"
     _write_skill_tmp(skill_tmp_dir / "validation.json", {
-        "validation": validation, "candidates": outcomes, "bank_committed": accepted,
+        "validation": validation, "candidates": outcomes, "bank_committed": False,
         "candidate_report_path": result["candidate_report_path"],
     })
     return _finish_decision(decisions_dir, decision_path, attempt_path, run_id, result, provenance)
+
+
+def _transfer_evolution_candidates(
+    *, proposal: dict[str, Any], trial_bank_path: Path, bank_path: Path,
+    language: str,
+) -> tuple[SkillBank, list[dict[str, Any]], bool]:
+    """Transfer only independently admissible trial candidates to the training bank.
+
+    The baseline runs on a disposable SkillBank snapshot. Its provisional
+    entries must be copied to the persistent bank after Harbor outcome checks;
+    copying the entire snapshot would overwrite newer observational counts.
+    """
+    source = SkillBank.load(trial_bank_path)
+    target = SkillBank.load(bank_path)
+    outcomes: list[dict[str, Any]] = []
+    transferred_ids: set[str] = set()
+    guidance_fields = (
+        "skill_id", "category_id", "version", "version_parent", "content_language",
+        "benchmark_scope", "interaction_modes", "problem_mechanism", "routing_summary",
+        "subcases", "triggers", "exclusions", "roles", "compatible_with",
+        "conflicts_with", "provenance", "capability_mapping",
+    )
+    for candidate in proposal["candidate"]:
+        outcome = {"kind": "skill", "skill_id": candidate.get("skill_id") if isinstance(candidate, dict) else None,
+                   "version": candidate.get("version") if isinstance(candidate, dict) else None,
+                   "status": "transfer_failed"}
+        outcomes.append(outcome)
+        try:
+            if not isinstance(candidate, dict):
+                raise ValueError("evolution candidate must be an object")
+            validate_skill(candidate, language=language, candidate=True)
+            staged_source = next((skill for skill in source.skills
+                                  if skill["skill_id"] == candidate["skill_id"]
+                                  and skill["version"] == candidate["version"]
+                                  and skill["status"] == "provisional"), None)
+            if staged_source is None or any(staged_source.get(key) != candidate.get(key)
+                                             for key in guidance_fields):
+                raise ValueError("candidate does not match the provisional trial snapshot")
+            stage_skill_candidate(target, candidate, save=False)
+            transferred_ids.add(candidate["skill_id"])
+            outcome["status"] = "provisional"
+        except (TypeError, ValueError) as exc:
+            outcome["reason"] = str(exc)
+    router_transferred = False
+    router_prompt = proposal.get("router_candidate")
+    if router_prompt is not None:
+        outcome = {"kind": "router", "status": "transfer_failed"}
+        outcomes.append(outcome)
+        try:
+            source_router = next((entry for entry in source.router_candidates
+                                  if entry.get("language") == language
+                                  and entry.get("prompt") == router_prompt
+                                  and entry.get("status") == "provisional"), None)
+            if source_router is None:
+                raise ValueError("Router candidate is absent from the trial snapshot")
+            if any(dep not in transferred_ids for dep in source_router.get("dependencies", [])):
+                raise ValueError("Router candidate depends on a Skill that was not transferred")
+            if any(entry.get("language") == language and entry.get("prompt") == router_prompt
+                   for entry in target.router_candidates):
+                raise ValueError("Router candidate is already present")
+            target.router_candidates.append(copy.deepcopy(source_router))
+            router_transferred = True
+            outcome["status"] = "provisional"
+        except (TypeError, ValueError) as exc:
+            outcome["reason"] = str(exc)
+    if transferred_ids or router_transferred:
+        target.save()
+    return target, outcomes, router_transferred
 
 
 def train_one(
@@ -647,8 +697,38 @@ def train_one(
     if proposal_path.is_file():
         try:
             proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
-            if not isinstance(proposal, dict) or proposal.get("kind") not in {"skill", "router"}:
+            if not isinstance(proposal, dict) or proposal.get("kind") not in {"skill", "router", "evolution"}:
                 raise ValueError("invalid candidate artifact")
+            if proposal["kind"] == "evolution":
+                if not isinstance(proposal.get("candidate"), list):
+                    raise ValueError("invalid evolution Skill candidates")
+                staged_bank, transfers, router_transferred = _transfer_evolution_candidates(
+                    proposal=proposal, trial_bank_path=trial_bank_path,
+                    bank_path=bank_path, language=training_language,
+                )
+                transferred_ids = {entry["skill_id"] for entry in transfers
+                                   if entry["kind"] == "skill" and entry["status"] == "provisional"}
+                result.update(reason="provisional_staged" if transferred_ids or router_transferred
+                              else "evolution_transfer_failed", candidate_kind="evolution",
+                              candidate_ids=sorted(transferred_ids), transfer_outcomes=transfers,
+                              request_outcomes=proposal.get("request_outcomes", []),
+                              validation={"status": "pending_independent_validation",
+                                          "independent_causal_credit": False})
+                for item in proposal["candidate"]:
+                    if not isinstance(item, dict) or item.get("skill_id") not in transferred_ids:
+                        continue
+                    previous = next((skill for skill in staged_bank.shadowed_skills
+                                     if skill["skill_id"] == item["skill_id"]), None)
+                    provenance.candidate("provisional_staged", {**proposal, "candidate": item},
+                                         source_path=proposal_path, previous_skill=previous)
+                if router_transferred:
+                    provenance.candidate("router_provisional_staged", {
+                        **proposal, "candidate": proposal["router_candidate"]},
+                        source_path=proposal_path,
+                        previous_router_prompt=staged_bank.router_prompts[training_language])
+                if transferred_ids or router_transferred:
+                    provenance.bank_snapshot("evolution_provisional_staged", staged_bank)
+                return _finish_decision(decisions_dir, decision_path, attempt_path, run_id, result, provenance)
             candidate_value = proposal.get("candidate")
             if (proposal["kind"] == "skill" and not isinstance(candidate_value, (dict, list))) or (
                 proposal["kind"] == "router" and not isinstance(candidate_value, str)
@@ -777,6 +857,7 @@ def train_one(
         )
         validation = {
             "accepted": accepted, "reward_delta": delta, "effective": effective,
+            "scope": "source_task_combination", "independent_causal_credit": False,
             "score_source": "harbor_verifier" if verifier_scores_available else "harness_fallback",
             "baseline_success": baseline_correct if verifier_scores_available else task_success(baseline, training_language),
             "candidate_success": candidate_correct if verifier_scores_available else candidate_harness_success,
@@ -792,19 +873,16 @@ def train_one(
             "assessed", {**proposal, "validation": validation}, source_path=proposal_path,
             previous_router_prompt=frozen_bank.router_prompts.get(training_language),
         )
-        if accepted:
-            try:
-                bank = SkillBank.load(bank_path)
-                commit_validated_candidate(bank, kind, candidate, language=training_language, validation=validation)
-            except Exception as exc:
-                result.update(reason="skillbank_commit_error", error_stage="skillbank_commit", error=str(exc))
-                _write_attempt(attempt_path, result)
-                provenance.append("commit_failure", error_type=type(exc).__name__, error=str(exc))
-                raise
-            provenance.bank_snapshot("after_commit", bank)
-            result["accepted"] = True
-        else:
-            result["reason"] = "candidate failed full-task acceptance checks"
+        bank = SkillBank.load(bank_path)
+        bank.router_candidates.append({
+            "language": training_language, "prompt": candidate,
+            "status": "quarantined" if hard_regression else "provisional",
+            "validation": validation, "evidence_refs": (proposal.get("assessment") or {}).get("evidence_refs", []),
+            "dependencies": [],
+        })
+        bank.save()
+        provenance.bank_snapshot("after_router_observation", bank)
+        result["reason"] = "provisional_pending_independent_validation" if accepted else "candidate failed full-task acceptance checks"
     return _finish_decision(decisions_dir, decision_path, attempt_path, run_id, result, provenance)
 
 
@@ -861,6 +939,8 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(template, dict):
         parser.error("invalid training YAML")
     bank_path = args.bank.resolve() if args.bank else output_root / "state" / "skillbank.json"
+    if not bank_path.exists():
+        SkillBank.load(bank_path).save()
     write_training_per_task_csv(output_root, all_names)
     for name in names:
         try:
