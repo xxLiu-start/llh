@@ -51,7 +51,6 @@ def build_role_manager_prompt(
     round_budget: int | None = None,
     language: str = "en",
     max_history_chars: int = 36_000,
-    skill_context: str = "",
     unattended_benchmark: bool = False,
     compact_history: bool = False,
 ) -> str:
@@ -102,7 +101,7 @@ Previous current-task state:
 Harness management feedback (not an audit; only for protocol/completion correction):
 {harness_feedback or "(No harness feedback.)"}
 
-{skill_context.strip()}
+
 
 Round budget:
 - Current management round: {round_index}
@@ -138,7 +137,7 @@ Output only the next management result.
 harness 任务管理反馈（不是审计，只用于协议或完成请求修正）:
 {harness_feedback or "(没有 harness 反馈。)"}
 
-{skill_context.strip()}
+
 
 轮次预算:
 - 当前任务管理轮次: {round_index}
@@ -160,7 +159,6 @@ def build_role_executor_prompt(
     related_auditor_reports: str = "",
     workspace_path: str = "",
     language: str = "en",
-    skill_context: str = "",
 ) -> str:
     lang = normalize_prompt_language(language)
     gui = next_step == MANAGER_NEXT_GUI
@@ -198,7 +196,7 @@ Assigned {role_name} subtask contract:
 Related auditor reports selected by round id:
 {related_auditor_reports.strip() or "(The manager referenced no related auditor report.)"}
 
-{skill_context.strip()}
+
 
 Complete only this subtask. Treat audited state and the stable contract as the trusted semantic boundary. Do not repeat audited work or use suspect, violating, fabricated, untrusted, or deleted artifacts. If context is missing or another dominant task type is required, stop and report it; do not guess or globally replan.
 """
@@ -233,7 +231,7 @@ Complete only this subtask. Treat audited state and the stable contract as the t
 按 round id 选择的相关 auditor 报告:
 {related_auditor_reports.strip() or "(任务管理器没有引用相关报告。)"}
 
-{skill_context.strip()}
+
 
 只完成当前子任务。把已审计状态和稳定契约视为可信语义边界；不要重复已审计工作，不要使用 suspect/violation、伪造、不可信或已删除产物。上下文不足或需要另一主任务类型时停止并报告，不要猜测或全局重规划。
 """
@@ -251,7 +249,6 @@ def build_role_auditor_prompt(
     workspace_path: str = "",
     max_executor_output_chars: int = 24_000,
     language: str = "en",
-    skill_context: str = "",
 ) -> str:
     lang = normalize_prompt_language(language)
     gui = next_step == MANAGER_NEXT_GUI
@@ -288,7 +285,7 @@ Executor natural-language output:
 Related auditor reports (background, never a substitute for direct read-only audit):
 {related_auditor_reports.strip() or "(The manager referenced no related auditor report.)"}
 
-{skill_context.strip()}
+
 
 {AUDITOR_CONTRACT_BACKCHECK[lang].strip()}
 
@@ -324,7 +321,7 @@ executor 自然语言输出:
 相关 auditor 报告（只作背景，不能代替当前只读审计）:
 {related_auditor_reports.strip() or "(任务管理器没有引用相关报告。)"}
 
-{skill_context.strip()}
+
 
 {AUDITOR_CONTRACT_BACKCHECK[lang].strip()}
 

@@ -388,11 +388,16 @@ def _fallback_hint(role: str, suffix: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", default=str(PROJECT_CONFIG_PATH))
+    selected_config = config_parser.parse_known_args(raw_argv[1:])[0].config
     run_defaults: dict[str, object] = {}
     config_error: ProjectConfigError | None = None
     if raw_argv[:1] == ["run"]:
         try:
-            run_defaults = load_run_defaults()
+            if selected_config != str(PROJECT_CONFIG_PATH) and not Path(selected_config).is_file():
+                raise ProjectConfigError(f"config file does not exist: {selected_config}")
+            run_defaults = load_run_defaults() if selected_config == str(PROJECT_CONFIG_PATH) else load_run_defaults(selected_config)
         except ProjectConfigError as exc:
             config_error = exc
 
@@ -419,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     run_parser = add_command("run", "Run a long-horizon task through role-managed LongHorizon-Harness")
+    run_parser.add_argument("--config", default=selected_config, help="Project or experiment TOML configuration.")
+    run_parser.set_defaults(local_model=run_default("local_model", {}), skills_config=run_default("skills_config", {}))
     run_parser.add_argument("--task", required=True, help="Task text or @path")
     run_parser.add_argument(
         "--agent",
@@ -511,26 +518,13 @@ def main(argv: list[str] | None = None) -> int:
         "--prompt-language",
         choices=("en", "zh"),
         default=run_default("prompt_language", "en"),
-        help="Language for manager/executor/auditor prompts. SkillBank runs require en.",
+        help="Language for manager/executor/auditor prompts.",
     )
     run_parser.add_argument(
-        "--skill-bank",
-        default=run_default("skill_bank"),
-        help="Enable prompt-driven Skill routing and learning with a persistent SkillBank JSON path.",
+        "--feasibility-reflector-config", default=run_default("feasibility_reflector_config"),
+        help="Optional feasibility Reflector JSON configuration. Disabled by default.",
     )
-    run_parser.add_argument(
-        "--skill-token-budget", type=int, default=2000,
-        help="Maximum approximate incremental Skill context tokens per role call.",
-    )
-    run_parser.add_argument(
-        "--skill-benchmark-id", choices=("generic", "weavebench", "osworld_v2", "terminal_bench_2_1"),
-        default="generic", help="Benchmark scope for Skill eligibility.",
-    )
-    run_parser.add_argument(
-        "--skill-interaction-mode", choices=("gui", "cli", "hybrid"),
-        default="hybrid", help="Interaction modality for Skill eligibility.",
-    )
-    run_parser.add_argument("--skill-dataset-id", default="", help="Dataset provenance for Skill evidence.")
+    run_parser.set_defaults(feasibility_reflector_defaults=run_default("feasibility_reflector"))
     # One entry per agent, each in that agent's own format: no translation.
     run_parser.add_argument(
         "--claude-mcp-config",
@@ -668,7 +662,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Bearer token for remote/API access (also LH_HARNESS_WEB_TOKEN).",
     )
 
-    add_command("doctor", "Check the local environment and report computer-use plugin state")
+    doctor_parser = add_command("doctor", "Check the local environment and report computer-use plugin state")
+    doctor_parser.add_argument("--check-model-endpoint", action="store_true", help="Actively check model ID, tool calls, SSE, errors and usage.")
+    doctor_parser.add_argument("--config", default=selected_config)
+    doctor_parser.add_argument("--agent", choices=_AGENT_CHOICES)
+    doctor_parser.add_argument("--model")
+    doctor_parser.add_argument("--base-url")
 
     plugin_parser = add_command("plugin", "Install or remove computer-use plugins")
     plugin_actions = plugin_parser.add_subparsers(dest="plugin_command")
@@ -704,6 +703,9 @@ def main(argv: list[str] | None = None) -> int:
                 help="Skip the plugin's consent and OS-permission commands (they need a desktop session).",
             )
 
+    from .skills.cli import register as register_skills
+    register_skills(add_command)
+
     init_parser = add_command("init", "Generate ./.lh-harness/config.toml for this project")
     init_parser.add_argument(
         "--force",
@@ -714,18 +716,23 @@ def main(argv: list[str] | None = None) -> int:
     add_command("check-update", "Check PyPI for a newer LongHorizon-Harness release")
 
     args = parser.parse_args(raw_argv)
+    if args.command == "skills":
+        from .skills.cli import command as skills_command
+        return skills_command(args)
     if args.command == "run":
         if config_error is not None:
             parser.error(str(config_error))
         _apply_repeatable_defaults(args, run_defaults)
-        if PROJECT_CONFIG_PATH.is_file():
-            print(f"Using config: {PROJECT_CONFIG_PATH.resolve()}")
+        if Path(args.config).is_file():
+            print(f"Using config: {Path(args.config).resolve()}")
         return _run_command(args)
     if args.command == "dashboard":
         return _dashboard_command(args)
     if args.command == "web":
         return _web_command(args)
     if args.command == "doctor":
+        if args.check_model_endpoint:
+            return _doctor_model_endpoint(args)
         return _doctor_command()
     if args.command == "plugin":
         if not args.plugin_command:
@@ -739,6 +746,27 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 2
+
+
+def _doctor_model_endpoint(args) -> int:
+    from .local_models import EndpointError
+    from .local_experiment import preflight
+    try:
+        if not Path(args.config).is_file() and args.config != str(PROJECT_CONFIG_PATH):
+            raise ProjectConfigError(f"config file does not exist: {args.config}")
+        values = load_run_defaults(args.config)
+        values.update({key: getattr(args, key) for key in ("agent", "model", "base_url") if getattr(args, key) is not None})
+        values.setdefault("agent", "codex")
+        values.setdefault("model", None)
+        values.setdefault("base_url", None)
+        values.setdefault("reasoning_effort", None)
+        values["local_model"] = {"enabled": True, **values.get("local_model", {})}
+        result = preflight(argparse.Namespace(**values))
+        print(json.dumps({"status": "ok", "roles": result}, ensure_ascii=False, indent=2))
+        return 0
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"status": "failed", "error": str(exc), "fallback": False}, ensure_ascii=False))
+        return 2
 
 
 def _doctor_command() -> int:
@@ -1479,8 +1507,20 @@ async def _run_with_attached_control(
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    if getattr(args, "skill_bank", None) and args.prompt_language not in {"en", "zh"}:
-        print("Cannot start run: SkillBank requires --prompt-language en or zh", file=sys.stderr)
+    from .local_experiment import preflight
+    try:
+        local_checks = preflight(args)
+    except (ValueError, OSError) as exc:
+        print(f"Cannot start run: local model preflight failed: {exc}", file=sys.stderr)
+        return 2
+    from .feasibility import ReflectorConfig, FeasibilityReflector
+    reflector_settings = getattr(args, "feasibility_reflector_defaults", None)
+    try:
+        if getattr(args, "feasibility_reflector_config", None):
+            reflector_settings = json.loads(Path(args.feasibility_reflector_config).expanduser().read_text())
+        reflector_config = ReflectorConfig.from_dict(reflector_settings)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"Cannot start run: invalid feasibility configuration ({type(exc).__name__})", file=sys.stderr)
         return 2
     # The agents work in the directory lh-harness was started from, so a task acts
     # on the user's real project by default. Resolve it before touching the disk:
@@ -1652,11 +1692,7 @@ def _run_command(args: argparse.Namespace) -> int:
         harness_dir=harness_dir,
         log_dir=log_dir,
         prompt_language=args.prompt_language,
-        skill_bank_path=getattr(args, "skill_bank", None),
-        skill_token_budget=getattr(args, "skill_token_budget", 2000),
-        skill_benchmark_id=getattr(args, "skill_benchmark_id", "generic"),
-        skill_interaction_mode=getattr(args, "skill_interaction_mode", "hybrid"),
-        skill_dataset_id=getattr(args, "skill_dataset_id", ""),
+        feasibility_reflector=reflector_settings,
     )
     env = _build_env(args.env, tmp_dir=str(run_dir / "tmp"))
 
@@ -1799,6 +1835,7 @@ def _run_command(args: argparse.Namespace) -> int:
                 hidden_paths=hidden_paths,
                 guard_exclude_paths=guard_exclude_paths,
                 reasoning_effort=effort,
+                context_length=(getattr(args, "local_model", {}) or {}).get("context_length"),
             )
         return agent_cache[key]
 
@@ -1834,11 +1871,49 @@ def _run_command(args: argparse.Namespace) -> int:
 
     from .manager import run
 
+    experiment_trainers = {}
+    experiment_active = bool(local_checks or getattr(args, "skills_config", {}))
+    if experiment_active:
+        from .local_experiment import write_manifest
+        write_manifest(args, log_dir, local_checks)
+        skill_settings = getattr(args, "skills_config", {}) or {}
+        training = skill_settings.get("training", {})
+        if skill_settings.get("enabled") and training.get("enabled") and "library_dir" not in skill_settings:
+            for training_role in training.get("train_roles", ("manager", "executor", "auditor")):
+                binding_role = {"executor": "cli_executor", "auditor": "cli_auditor"}.get(training_role, training_role)
+                training_backend = _resolve_role_option(args, binding_role, "agent")
+                experiment_trainers[training_role] = _build_agent(
+                    training_backend, role="final_response",
+                    model=_resolve_role_model(args, binding_role), api_key=args.api_key, base_url=args.base_url,
+                    workspace_path=workspace, prompt_dir=prompt_dir, mcp_config=None,
+                    hidden_paths=hidden_paths, guard_exclude_paths=guard_exclude_paths,
+                    reasoning_effort=_resolve_role_reasoning_effort(args, binding_role, training_backend),
+                    context_length=(getattr(args, "local_model", {}) or {}).get("context_length"),
+                )
+
+    async def run_selected_experiment(**kwargs):
+        if not experiment_active:
+            return await run(**kwargs)
+        from .local_experiment import execute
+        selected_agents = {key: kwargs.pop(key) for key in role_agents}
+        return await execute(role_agents=selected_agents, args=args, trainers=experiment_trainers, **kwargs)
+
+    reflector = None
+    if reflector_config.active:
+        from .feasibility.model import JsonModelAgent
+        provider = _resolve_role_option(args, "manager", "agent")
+        protocol = "anthropic" if provider == "claude_code" and os.getenv("LH_HARNESS_PROXY_OPENAI_BRIDGE") != "1" else "openai"
+        reflector = FeasibilityReflector(reflector_config, JsonModelAgent(
+            model=_resolve_role_model(args, "manager"), protocol=protocol,
+            base_url=args.base_url or (os.getenv("DEEPSEEK_BASE_URL") if provider == "deepseek_harness" else os.getenv("ANTHROPIC_BASE_URL") if provider == "claude_code" else None),
+            api_key=args.api_key or (os.getenv("DEEPSEEK_API_KEY") if provider == "deepseek_harness" else os.getenv("ANTHROPIC_API_KEY") if provider == "claude_code" else None),
+        ))
+
     report: dict[str, object] | None = None
     try:
         report = asyncio.run(
             _run_with_attached_control(
-                run(
+                run_selected_experiment(
                     task=task,
                     env=env,
                     config=config,
@@ -1848,6 +1923,7 @@ def _run_command(args: argparse.Namespace) -> int:
                     ),
                     progress=_print_progress,
                     resume=bool(getattr(args, "resume", False)),
+                    feasibility_reflector=reflector,
                     **role_agents,
                 ),
                 run_dir=run_dir,
@@ -1997,6 +2073,10 @@ def _print_progress(event: str, payload: dict) -> None:
     round_index = payload.get("round")
     if event == "round_start":
         print(f"\n── Round {round_index}/{payload.get('round_budget')} ──", flush=True)
+    elif event == "feasibility_start":
+        print("  [feasibility] checking contract...", flush=True)
+    elif event == "feasibility_decision":
+        print(f"  [feasibility] {payload.get('decision')} · {payload.get('dispatch')}", flush=True)
     elif event == "role_start":
         # The reply is written when the run reaches an ending, so it gets its own
         # heading instead of appearing to be part of that round's work.
@@ -2245,6 +2325,7 @@ def _build_agent(
     hidden_paths: tuple[str, ...] = (),
     guard_exclude_paths: tuple[str, ...] = (),
     reasoning_effort: str | None = None,
+    context_length: int | None = None,
 ):
     if name == "codex":
         from .adapters.codex import CodexAdapter
@@ -2258,6 +2339,8 @@ def _build_agent(
             add_dirs=mcp_add_dirs,
             hidden_paths=hidden_paths,
             reasoning_effort=reasoning_effort,
+            sandbox_mode="read-only" if role in {"manager", "final_response", "auditor_format_repair", "gui_auditor", "cli_auditor"} else None,
+            context_length=context_length,
         )
         if model is not None:
             kwargs["model"] = model
@@ -2300,6 +2383,7 @@ def _build_agent(
         return DeepSeekHarnessAdapter(**kwargs)
     if name == "opencode":
         from .adapters.opencode import OpenCodeAdapter
+        from .adapters.read_only import ReadOnlyGuardAdapter
 
         kwargs = dict(
             api_key=api_key,
@@ -2312,7 +2396,10 @@ def _build_agent(
         )
         if model is not None:
             kwargs["model"] = model
-        return OpenCodeAdapter(**kwargs)
+        adapter = OpenCodeAdapter(**kwargs)
+        if role in {"manager", "final_response", "auditor_format_repair", "gui_auditor", "cli_auditor"}:
+            return ReadOnlyGuardAdapter(adapter, excluded_paths=(*hidden_paths, *guard_exclude_paths))
+        return adapter
     raise ValueError(f"Unknown agent: {name}")
 
 

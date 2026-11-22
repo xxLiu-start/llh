@@ -12,6 +12,7 @@ from ..environment.base import Environment
 from ..environment.remote_files import write_remote_text
 from ..runtime_signals import detect_runtime_signals
 from ..types import DEFAULT_TMP_DIR, DEFAULT_WORKSPACE_PATH, EpisodeBudget, EpisodeResult
+from ..token_usage import from_trajectory
 
 _SECRET_NAME = r"(?:API[_-]?KEY|AUTH[_-]?TOKEN|ACCESS[_-]?TOKEN|SECRET|PASSWORD|TOKEN)"
 _SECRET_VALUE = r"(?:'[^']*'|\"[^\"]*\"|\S+)"
@@ -101,6 +102,7 @@ class CommandAgentAdapter:
             error=error,
             duration_ms=duration_ms,
             metadata={
+                "usage": from_trajectory(stdout_log),
                 "command": redact_secrets(command),
                 "workspace": self.workspace_path,
                 "prompt_path": prompt_path,

@@ -306,6 +306,8 @@ lh-harness doctor
 
 `doctor` 是只读的，只报告 Python 运行时、Agent CLI、Node.js 和插件状态，必需项失败时返回非零退出码。
 
+Original LLH 和 Skill-enhanced LLH 共用本地模型接入，通过原有 `base_url` 与角色模型配置连接服务。`lh-harness doctor --check-model-endpoint --config path/to/local.toml` 会实际发送模型 ID、工具调用、流式输出、错误处理与 Usage 探测；服务不可用或协议不兼容时，两条轨道都停止，不回退云端。五份独立配置、相同推理策略、Manifest 和使用方式见[本地模型实验指南](experiments/skill_evolution/README.md)，实际验收范围见[验证记录](experiments/skill_evolution/validation/README.md)。
+
 Agent CLI 会实际执行 `<binary> --version` 来验证，而不是只看它在不在 `PATH` 上，所以存在但跑不起来的 CLI 会被判为 FAIL 而非 OK。这能抓到 Windows 上的一个坑：从 Microsoft Store 装桌面应用后，`PATH` 上会留下一个 0 字节的 `codex.exe` 别名，那不是 CLI，`doctor` 会给出修复方式。
 
 它还会检查 [PyPI](https://pypi.org/project/lh-harness) 上是否有新版本。也可以单独运行：

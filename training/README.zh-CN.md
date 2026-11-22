@@ -1,3 +1,5 @@
+> 旧的三角色 Skill 注入和在线训练入口已移至 `archive/legacy_skills/`，以下旧方法内容仅作历史参考。新方法为默认关闭的只读 Feasibility Reflector；运行、离线学习及验证方式见 [新方法说明](../docs/feasibility_reflector.md)。原版评估脚本不变。
+
 # SkillBank 训练与测试
 
 ## 数据划分

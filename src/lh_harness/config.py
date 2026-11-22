@@ -45,6 +45,7 @@ _RUN_KEYS = {
     "dashboard_port",
     "roles",
     "timeouts",
+    "feasibility_reflector",
 }
 _STRING_KEYS = {
     "model",
@@ -172,13 +173,23 @@ def load_run_defaults(path: str | Path = PROJECT_CONFIG_PATH) -> dict[str, Any]:
         raise ProjectConfigError(f"could not read {source}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ProjectConfigError(f"{source} must contain a TOML table")
-    unknown_root = set(payload) - {"run"}
+    unknown_root = set(payload) - {"run", "local_model", "skills"}
     if unknown_root:
         raise ProjectConfigError(f"unknown top-level key(s): {_names(unknown_root)}")
     run = payload.get("run", {})
     if not isinstance(run, dict):
         raise ProjectConfigError("[run] must be a TOML table")
-    return _flatten_run_table(run)
+    defaults = _flatten_run_table(run)
+    try:
+        if "local_model" in payload:
+            from .local_models import validate_profile
+            defaults["local_model"] = validate_profile(payload["local_model"])
+        if "skills" in payload:
+            from .skill_experiment import validate_skills
+            defaults["skills_config"] = validate_skills(payload["skills"])
+    except ValueError as exc:
+        raise ProjectConfigError(str(exc)) from exc
+    return defaults
 
 
 def _flatten_run_table(run: dict[str, Any]) -> dict[str, Any]:
@@ -187,6 +198,14 @@ def _flatten_run_table(run: dict[str, Any]) -> dict[str, Any]:
         raise ProjectConfigError(f"unknown [run] key(s): {_names(unknown)}")
 
     defaults: dict[str, Any] = {}
+    if "feasibility_reflector" in run:
+        from .feasibility.schema import ReflectorConfig
+        try:
+            reflector = run["feasibility_reflector"]
+            ReflectorConfig.from_dict(reflector)
+        except (ValueError, TypeError) as exc:
+            raise ProjectConfigError(f"invalid run.feasibility_reflector: {exc}") from exc
+        defaults["feasibility_reflector"] = reflector
     for key in _STRING_KEYS:
         if key in run:
             defaults[key] = _string(run[key], f"run.{key}")

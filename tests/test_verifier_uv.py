@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from lh_harness.eval_terminal_bench_skillbanks import _write_eval_config
 from lh_harness.eval_terminal_bench_pro_original import _write_config as _write_original_config
 from lh_harness.eval_terminal_bench_pro_original import main as original_eval_main
-from lh_harness.train_terminal_bench_pro import _write_trial_config
 from lh_harness.verifier_uv import (COMPOSE_NAME, INSTALLER_URL, add_verifier_uv,
                                     scoped_verifier_uv_host_env, verifier_uv_host_env)
 
@@ -37,18 +35,10 @@ def test_all_tb_pro_drivers_supply_uv_only_for_matching_verifier(tmp_path: Path)
     dataset = _dataset(tmp_path)
     original_script = (dataset / "task" / "tests" / "test.sh").read_bytes()
     template = {"environment": {"type": "docker"}, "agents": [{"kwargs": {}}]}
-    training_path = tmp_path / "training.yaml"
-    _write_trial_config(template, task="task", phase="baseline", dataset=dataset,
-                        bank=tmp_path / "bank.json", jobs_dir=tmp_path / "jobs",
-                        config_path=training_path)
-    training = yaml.safe_load(training_path.read_text())
-    evaluation, _ = _write_eval_config(
-        template, task="task", dataset=dataset, output_root=tmp_path / "eval",
-        config_path=tmp_path / "eval.yaml", run_id="run12345", frozen_bank=tmp_path / "bank.json")
     original, _ = _write_original_config(
         template, task="task", dataset=dataset, output_root=tmp_path / "original",
         config_path=tmp_path / "original.yaml", run_id="run12345")
-    for config in (training, evaluation, original):
+    for config in (original,):
         assert COMPOSE_NAME in [Path(path).name for path in config["environment"]["extra_docker_compose"]]
         assert config["verifier"]["env"]["HOME"] == "/root"
         assert config["verifier"]["env"]["PATH"].startswith("/opt/lhh-verifier-uv:")

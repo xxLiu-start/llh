@@ -8,13 +8,14 @@ import subprocess
 from pathlib import Path
 
 
-def find_cached_claude_binary(output_root: Path, version: str) -> Path | None:
+def find_cached_claude_binary(output_root: Path, version: str, persistent_cache: Path | None = None) -> Path | None:
     if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
         return None
     preferred = output_root / "jobs" / "claude_code_cache" / version / "claude"
     siblings = sorted(output_root.parent.glob(f"*/jobs/claude_code_cache/{version}/claude"))
     archived = sorted(output_root.parent.glob(f"*/*/jobs/claude_code_cache/{version}/claude"))
-    for candidate in dict.fromkeys([preferred, *siblings, *archived]):
+    persistent = [persistent_cache / version / "claude"] if persistent_cache is not None else []
+    for candidate in dict.fromkeys([*persistent, preferred, *siblings, *archived]):
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             continue
         try:

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "$LLH_VERIFIER_RUNTIME/python/cpython-3.13.9-linux-x86_64-gnu/bin/python3.13" "$LLH_VERIFIER_SUPPORT/dispatch.py" curl "$@"

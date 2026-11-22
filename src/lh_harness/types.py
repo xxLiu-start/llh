@@ -42,8 +42,6 @@ DEFAULT_MAX_ROUNDS = 25
 
 RoleNextStep = Literal["gui", "cli", "done", "blocked", "invalid", "ask"]
 PromptLanguage = Literal["en", "zh"]
-SkillBenchmarkId = Literal["generic", "weavebench", "osworld_v2", "terminal_bench_2_1"]
-InteractionMode = Literal["gui", "cli", "hybrid"]
 
 
 @dataclass
@@ -123,40 +121,18 @@ class HarnessConfig:
     auditor_output_chars: int = 24_000
     role_verified_context_chars: int = 60_000
     role_history_chars: int = 100_000
-    # English is the general default; the Terminal-Bench Pro training template
-    # selects Chinese role, Router, and Skill-learning prompts explicitly.
     prompt_language: PromptLanguage = "en"
-    # Explicit opt-in; the bank is shared across runs, while route records live
-    # under each run's log directory.
-    skill_bank_path: str | None = None
-    skill_token_budget: int = 2000
-    skill_reward_reference_tokens: int = 100_000
-    # Soft task limit checked between managed rounds, leaving the post-task
-    # Skill diagnosis free to analyze the evidence already collected.
-    task_token_soft_limit: int | None = None
     compact_runtime_context: bool = False
-    skill_update_enabled: bool = True
-    skill_benchmark_id: SkillBenchmarkId = "generic"
-    skill_interaction_mode: InteractionMode = "hybrid"
-    skill_dataset_id: str = ""
+    feasibility_reflector: dict[str, Any] | None = None
     # Harbor benchmarks have no operator available to answer Manager questions.
     unattended_benchmark: bool = False
     # None preserves the historical manager-derived 60-180 second reply budget.
     final_response_budget: EpisodeBudget | None = None
 
     def __post_init__(self) -> None:
-        if self.task_token_soft_limit is not None and self.task_token_soft_limit < 1:
-            raise ValueError("task_token_soft_limit must be positive")
-        if type(self.skill_token_budget) is not int or self.skill_token_budget < 1:
-            raise ValueError("skill_token_budget must be a positive integer")
-        if type(self.skill_reward_reference_tokens) is not int or self.skill_reward_reference_tokens < 1:
-            raise ValueError("skill_reward_reference_tokens must be a positive integer")
-        if self.skill_bank_path and self.prompt_language not in {"en", "zh"}:
-            raise ValueError("SkillBank runs require en or zh prompts")
-        if self.skill_benchmark_id not in ("generic", "weavebench", "osworld_v2", "terminal_bench_2_1"):
-            raise ValueError("invalid Skill benchmark ID")
-        if self.skill_interaction_mode not in ("gui", "cli", "hybrid"):
-            raise ValueError("invalid Skill interaction mode")
+        if self.feasibility_reflector is not None:
+            from .feasibility.schema import ReflectorConfig
+            ReflectorConfig.from_dict(self.feasibility_reflector)
 
 
 def audit_report_to_dict(report: AuditReport) -> dict[str, Any]:

@@ -1,0 +1,37 @@
+# Bootstrap-only cached tools/dependencies. The original task image and tests
+# are unchanged, and the agent cannot modify the shared dependency cache.
+services:
+  main:
+    volumes:
+      - type: bind
+        source: ${LLH_VERIFIER_RUNTIME}/bin
+        target: ${LLH_VERIFIER_RUNTIME}/bin
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_RUNTIME}/python
+        target: ${LLH_VERIFIER_RUNTIME}/python
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_RUNTIME}/profiles
+        target: ${LLH_VERIFIER_RUNTIME}/profiles
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_RUNTIME}/manifest.json
+        target: ${LLH_VERIFIER_RUNTIME}/manifest.json
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_RUNTIME}/system/images
+        target: ${LLH_VERIFIER_RUNTIME}/system/images
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_RUNTIME}/system/manifest.json
+        target: ${LLH_VERIFIER_RUNTIME}/system/manifest.json
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_SUPPORT}
+        target: ${LLH_VERIFIER_SUPPORT}
+        read_only: true
+      - type: bind
+        source: ${LLH_VERIFIER_SUPPORT}/env
+        target: /root/.local/bin/env
+        read_only: true

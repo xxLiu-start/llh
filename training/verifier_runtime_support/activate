@@ -1,0 +1,21 @@
+# Sourced by bash only in the verifier phase. Preserve the image's PATH.
+if [ "${LLH_VERIFIER_BOOTSTRAP_ACTIVE:-}" != 1 ]; then
+    export LLH_VERIFIER_REAL_CURL="$(command -v curl || true)"
+    export LLH_VERIFIER_REAL_PIP="$(command -v pip || true)"
+    export LLH_VERIFIER_REAL_GIT="$(command -v git || true)"
+    export LLH_VERIFIER_BOOTSTRAP_ACTIVE=1
+    rm -f /logs/verifier/infra_error.json
+    rm -f /logs/verifier/bootstrap.json
+fi
+case ":$PATH:" in
+    *:"$LLH_VERIFIER_SUPPORT":*) ;;
+    *) export PATH="$LLH_VERIFIER_SUPPORT:$PATH" ;;
+esac
+case ":${PYTHONPATH:-}:" in
+    *:"$LLH_VERIFIER_SUPPORT":*) ;;
+    *) export PYTHONPATH="$LLH_VERIFIER_SUPPORT${PYTHONPATH:+:$PYTHONPATH}" ;;
+esac
+case ",${PYTEST_PLUGINS:-}," in
+    *,lhh_bootstrap_done,*) ;;
+    *) export PYTEST_PLUGINS="${PYTEST_PLUGINS:+$PYTEST_PLUGINS,}lhh_bootstrap_done" ;;
+esac

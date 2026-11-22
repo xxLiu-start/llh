@@ -1,0 +1,54 @@
+# Original TB2.1 MEA entry; no Skills. Based on the official TB2.1 YAML.
+# Pass --path /actual/TB2.1/tasks; the default dataset directory is not present.
+# ANTHROPIC_BASE_URL must be reachable FROM THE TASK CONTAINER and omit /v1.
+# Credentials come only from environment variables.
+# Sampling matches the existing local-model experiment profile; thinking is
+# explicitly disabled per request as well as in the serving configuration.
+job_name: original-llh-tb21-local-qwen27b
+jobs_dir: output/tb21-original-local-qwen27b
+n_attempts: 1
+n_concurrent_trials: 1
+retry:
+  max_retries: 0
+environment:
+  type: docker
+agents:
+- import_path: harbor_agent:CuaHarnessClaudeCodeAgent
+  model_name: /data0/liuxule/project/models/Qwen3.8-27B
+  override_timeout_sec: 18000
+  override_setup_timeout_sec: 18000
+  include_logs:
+  - cua_harness_claudecode_harbor/**
+  env:
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
+    CUA_HARNESS_CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.176}
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+    LH_HARNESS_PROXY_OPENAI_BRIDGE: '0'
+  kwargs:
+    harness_model: /data0/liuxule/project/models/Qwen3.8-27B
+    verifier_model: /data0/liuxule/project/models/Qwen3.8-27B
+    workspace_path: /app
+    max_rounds: 25
+    episode_timeout_sec: 4200
+    cli_task_timeout_sec: 1800
+    orchestrator_timeout_sec: 600
+    verifier_timeout_sec: 600
+    max_turns: 200
+    orchestrator_max_turns: 200
+    verifier_max_turns: 200
+    max_tokens: 8192
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    llm_call_kwargs:
+      extra_body:
+        thinking:
+          type: disabled
+        chat_template_kwargs:
+          enable_thinking: false
+    dashscope_wait_timeout_sec: 90
+verifier:
+  override_timeout_sec: 18000
+datasets:
+- path: eval/TB-harness/datasets/terminal-bench-2-1/tasks

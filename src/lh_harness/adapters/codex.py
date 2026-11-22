@@ -36,6 +36,7 @@ class CodexAdapter(CommandAgentAdapter):
         sandbox_mode: str | None = None,
         hidden_paths: tuple[str, ...] = (),
         reasoning_effort: str | None = None,
+        context_length: int | None = None,
     ) -> None:
         effort = normalise_reasoning_effort(reasoning_effort)
         env_parts: list[str] = []
@@ -65,6 +66,10 @@ class CodexAdapter(CommandAgentAdapter):
 
         for override in _config_overrides(base_url=base_url, api_key=api_key):
             command_parts.extend(["-c", shlex.quote(override)])
+        if context_length is not None:
+            if type(context_length) is not int or context_length < 1:
+                raise ValueError("context_length must be a positive integer")
+            command_parts.extend(["-c", f"model_context_window={context_length}"])
 
         # Codex has no `--effort` flag; the reasoning depth is a config value.
         # Passing nothing leaves the user's own ~/.codex/config.toml in charge.
@@ -113,8 +118,8 @@ def _config_overrides(*, base_url: str | None, api_key: str | None) -> list[str]
         "base_url": _normalize_base_url(base_url),
         "wire_api": "responses",
     }
-    if api_key:
-        provider["env_key"] = "OPENAI_API_KEY"
+    if api_key or os.getenv("OPENAI_API_KEY") or os.getenv("CODEX_API_KEY"):
+        provider["env_key"] = "OPENAI_API_KEY" if api_key or os.getenv("OPENAI_API_KEY") else "CODEX_API_KEY"
     return [
         f"model_providers.{_PROVIDER_ID}={_toml_inline(provider)}",
         f"model_provider={json.dumps(_PROVIDER_ID)}",

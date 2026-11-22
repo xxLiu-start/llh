@@ -1,0 +1,5 @@
+# 自由增删任务，每行一个 ID；写 all 表示全部 89 题。
+# 修改后，下次启动会按此顺序训练，默认最终评估同一份任务清单。
+code-from-image
+cancel-async-tasks
+largest-eigenval

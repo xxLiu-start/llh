@@ -1,0 +1,17 @@
+{
+  "original_llh": {
+    "repository": "https://github.com/AMAP-ML/LongHorizon-Harness",
+    "commit": "d53df0aa11e8506dfc9518ef63620c62baee04d3"
+  },
+  "evo_harness": {
+    "source": "https://github.com/A-EVO-Lab/a-evolve/blob/release/evo-harness/evo_harness/terminal_bench.py",
+    "git_blob_sha": "760e1c9826e3b153c4cb690b5ab482bf384d21b2",
+    "reviewed_prompts": [
+      "ANALYZE_AND_PROPOSE_PASS_PROMPT",
+      "ANALYZE_AND_PROPOSE_FAIL_PROMPT",
+      "CURATOR_PROMPT",
+      "GENERAL_CURATOR_PROMPT"
+    ],
+    "implementation": "MEA-specific design; not a copy of the solver/evolver or tool-enabled curator"
+  }
+}

@@ -1,0 +1,43 @@
+# Frozen TB experiment: invoke the independent experiment launcher.
+[run]
+agent = "claude_code"
+model = "/data0/liuxule/project/models/Qwen3.8-27B"
+base_url = "http://172.17.0.1:8010/v1"
+env = "local"
+max_rounds = 25
+
+[local_model]
+enabled = true
+protocol = "messages"
+context_length = 1000000
+max_output_tokens = 8192
+temperature = 0.6
+top_p = 0.95
+concurrency = 1
+
+[local_model.reasoning]
+enable_thinking = false
+
+[skills]
+enabled = false
+library_dir = "experiments/skill_evolution/libraries/baseline"
+tokenizer_path = "/data0/liuxule/project/models/Qwen3.8-27B"
+phase = "train"
+max_per_role = "unlimited"
+token_budget_per_role = "unlimited"
+
+[skills.training]
+enabled = false
+train_roles = []
+batch_size = 5
+min_independent_tasks = 1
+learn_from_success = true
+learn_from_failure = true
+
+[skills.usage]
+enabled = false
+use_roles = ["manager", "executor", "auditor"]
+
+[skills.router]
+method = "bm25"
+max_skills_per_role = "unlimited"

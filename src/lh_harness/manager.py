@@ -24,7 +24,8 @@ from .environment.remote_files import ensure_remote_dir, write_remote_text
 from .runtime_signals import hard_signal_labels
 from .provider_errors import classify_agent_runtime_failure
 from .trajectory_artifacts import persist_trajectory_artifacts
-from .skill_learning import SkillBank, SkillSession, Replay
+from .feasibility import ReflectorConfig, FeasibilityReflector
+from .feasibility.integration import snapshot_for_contract, disposition, feedback as feasibility_feedback
 from .role_prompts import (
     MANAGER_NEXT_BLOCKED,
     MANAGER_NEXT_CLI,
@@ -75,31 +76,6 @@ _MAX_SAVED_TRAJECTORY_BYTES = 16 * 1024 * 1024
 _MAX_FAILURE_REPORT_BYTES = 1 * 1024 * 1024
 _MAX_FAILURE_EVENTS_BYTES = 4 * 1024 * 1024
 _MAX_FAILURE_EVENT_RECORDS = 50_000
-
-
-def _skill_routing_brief(
-    *, task_goal: str, current_state: str, rounds: list[ManagedRound],
-    related_evidence: str = "", executor_output: str = "",
-) -> dict[str, Any]:
-    """Map already recorded MEA state to the compact shared Router schema."""
-    evidence: list[dict[str, str]] = []
-    for item in rounds[-2:]:
-        if item.auditor_report:
-            evidence.append({
-                "type": "audit", "summary": item.auditor_report[:1800],
-                "source_ref": f"round_{item.round_index:03d}/auditor_report.txt",
-            })
-    if related_evidence:
-        evidence.append({"type": "handoff", "summary": related_evidence[:1800], "source_ref": "selected_auditor_reports"})
-    if executor_output:
-        evidence.append({"type": "handoff", "summary": executor_output[:2400], "source_ref": "current_round/executor_output.txt"})
-    return {
-        "task_goal": task_goal[:3000],
-        "current_state": current_state[:2500],
-        "recent_actions": [item.plan_text[:500] for item in rounds[-2:]],
-        "evidence": evidence,
-        "task_status": "running",
-    }
 
 
 def _invalid_completion_feedback(language: str) -> str:
@@ -209,9 +185,9 @@ async def _run_impl(
     pending_instructions: Callable[[], list[str]] | None = None,
     progress: Callable[[str, dict[str, Any]], None] | None = None,
     resume: bool = False,
-    skill_replay: Replay | None = None,
-    skill_candidate: dict[str, Any] | list[dict[str, Any]] | None = None,
-    skill_router_prompt_override: str | None = None,
+    feasibility_reflector: FeasibilityReflector | None = None,
+    feasibility_tools: tuple[dict[str, Any], ...] = (),
+    feasibility_observations: tuple[dict[str, Any], ...] = (),
     _run_progress: _RunProgress | None = None,
 ) -> dict[str, Any]:
     """Run the generic LongHorizon-Harness four-role management loop.
@@ -287,23 +263,9 @@ async def _run_impl(
     events_path = role_dir / "events.jsonl"
     started = time.monotonic()
 
-    skill_session = None
-    if config.skill_bank_path:
-        bank = SkillBank.load(config.skill_bank_path)
-        skill_session = SkillSession(
-            bank=bank,
-            language=config.prompt_language,
-            agent=cli_auditor_agent,
-            env=env,
-            budget=auditor_budget,
-            log_dir=role_dir,
-            token_budget=config.skill_token_budget,
-            candidate=skill_candidate,
-            router_prompt_override=skill_router_prompt_override,
-            benchmark_id=config.skill_benchmark_id,
-            interaction_mode=config.skill_interaction_mode,
-            dataset_id=config.skill_dataset_id,
-        )
+    reflector_config = ReflectorConfig.from_dict(config.feasibility_reflector)
+    reflector = (feasibility_reflector or FeasibilityReflector(reflector_config)) if reflector_config.active else None
+    feasibility_revisions = 0
 
     await _ensure_remote_layout(env, config)
 
@@ -324,6 +286,12 @@ async def _run_impl(
             last_plan = rounds[-1].plan_text
             current_task_state = rounds[-1].task_state
             current_task_contract = rounds[-1].task_contract
+        if reflector is not None:
+            for previous in reversed(rounds):
+                if previous.harness_feedback.startswith("Feasibility feedback") and not previous.executor_output:
+                    feasibility_revisions += 1
+                else:
+                    break
 
     # After a resume ``max_total_episodes`` is the *additional* budget, so the
     # effective ceiling continues from the restored rounds.
@@ -389,17 +357,6 @@ async def _run_impl(
         _run_progress.started_at = started
 
     while round_index < gate.round_budget:
-        task_tokens = skill_session.total_tokens() if skill_session is not None else None
-        if (rounds and config.task_token_soft_limit is not None
-                and task_tokens is not None and task_tokens >= config.task_token_soft_limit):
-            gate.abort_reason = "token_budget_exhausted"
-            _append_event(events_path, "task_token_soft_limit_reached", {
-                "rounds_run": len(rounds), "task_tokens": task_tokens,
-                "limit": config.task_token_soft_limit,
-            })
-            emit("task_token_soft_limit_reached", rounds_run=len(rounds), task_tokens=task_tokens,
-                 limit=config.task_token_soft_limit)
-            break
         round_index += 1
         round_dir = rounds_dir / f"round_{round_index:03d}"
         _ensure_dir_nofollow(round_dir)
@@ -453,23 +410,6 @@ async def _run_impl(
             )
             gate.carryover_instructions = ""
 
-        if skill_session is not None:
-            context = await skill_session.route(
-                "manager", manager_prompt, round_index,
-                _skill_routing_brief(task_goal=task, current_state=current_task_state, rounds=rounds),
-            )
-            if context:
-                manager_prompt = build_role_manager_prompt(
-                    task=task, rounds=rounds, round_index=round_index,
-                    task_state=current_task_state, task_contract=current_task_contract,
-                    round_budget=gate.round_budget, language=config.prompt_language,
-                    max_history_chars=config.role_history_chars, skill_context=context,
-                    unattended_benchmark=config.unattended_benchmark,
-                    compact_history=config.compact_runtime_context,
-                ) + human_prompt_suffix
-
-            skill_session.record_injected_prompt("manager", round_index, manager_prompt)
-
         _write_local(round_dir / "manager_input.txt", manager_prompt)
         await _write_remote_round_text(env, config, round_index, "manager_input.txt", manager_prompt)
         _append_event(
@@ -486,8 +426,6 @@ async def _run_impl(
             manager_budget,
             live_trajectory_path=str(round_dir / "manager_raw_trajectory.jsonl"),
         )
-        if skill_session is not None:
-            skill_session.record_episode(manager_result)
         _save_role_result(
             round_dir,
             "manager",
@@ -757,6 +695,55 @@ async def _run_impl(
             language=config.prompt_language,
         )
 
+        # Optional read-only boundary: original role prompts and Contract stay intact.
+        if reflector is not None:
+            emit("feasibility_start", round=round_index)
+            snapshot = snapshot_for_contract(
+                task=task, contract=current_task_contract, plan=plan_text,
+                manager_state=current_task_state, rounds=rounds, route=next_step,
+                tools=feasibility_tools or ({"route": next_step,
+                    "backend": type(executor_agent).__name__,
+                    "description": "Original role adapter; tool schemas/permissions not exposed"},),
+                observations=feasibility_observations,
+            )
+            try:
+                assessment, trace = await reflector.assess(snapshot)
+            except Exception as exc:
+                # Custom adapters share the same fail-open boundary as the built-in checker.
+                from .feasibility.schema import Assessment
+                assessment = Assessment("UNKNOWN", "uncertain", uncertainty="reflector_runtime_error")
+                trace = {"runtime_error": type(exc).__name__, "llm_calls": 0}
+            action = disposition(reflector_config, assessment, trace, feasibility_revisions)
+            sidecar = {"snapshot": snapshot.to_dict(), "result": assessment.to_dict(),
+                       "trace": trace, "mode": reflector_config.mode,
+                       "revision_count": feasibility_revisions, "dispatch": action,
+                       "original_contract": current_task_contract,
+                       "final_contract": current_task_contract}
+            try:
+                _write_local(round_dir / "feasibility.json", json.dumps(sidecar, ensure_ascii=False, indent=2)+"\n")
+                _append_event(events_path, "feasibility_decision", {
+                    "round": round_index, "decision": assessment.decision,
+                    "skills": assessment.retrieved_skills, "dispatch": action, **trace})
+            except Exception:
+                logger.warning("Feasibility sidecar logging failed", exc_info=True)
+            emit("feasibility_decision", round=round_index, decision=assessment.decision, dispatch=action)
+            if action != "dispatch":
+                correction = feasibility_feedback(assessment)
+                record = ManagedRound(round_index=round_index, next_step=next_step,
+                    plan_text=plan_text, harness_feedback=correction,
+                    task_state=current_task_state, task_contract=current_task_contract,
+                    related_report_refs=related_report_refs)
+                rounds.append(record)
+                await _record_round(env, config, role_dir, events_path, record)
+                if action == "block":
+                    gate.abort_reason = "feasibility_blocked"
+                    gate.block_reason = correction
+                    break
+                feasibility_revisions += 1
+                # Same Manager invocation, same prompt builder, same original round budget.
+                continue
+            feasibility_revisions = 0
+
         # Task prompts receive the manager-maintained state plus only the
         # auditor reports explicitly referenced by the current subtask contract.
         executor_prompt = build_role_executor_prompt(
@@ -769,27 +756,6 @@ async def _run_impl(
             workspace_path=config.workspace_path,
             language=config.prompt_language,
         )
-        if skill_session is not None:
-            context = await skill_session.route(
-                "gui_executor" if next_step == MANAGER_NEXT_GUI else "cli_executor",
-                executor_prompt, round_index,
-                _skill_routing_brief(
-                    task_goal=plan_text, current_state=current_task_state,
-                    rounds=rounds, related_evidence=related_auditor_reports,
-                ),
-            )
-            if context:
-                executor_prompt = build_role_executor_prompt(
-                    task=task, plan_text=plan_text, next_step=next_step,
-                    task_state=current_task_state, task_contract=current_task_contract,
-                    related_auditor_reports=related_auditor_reports,
-                    workspace_path=config.workspace_path, language=config.prompt_language,
-                    skill_context=context,
-                )
-            skill_session.record_injected_prompt(
-                "gui_executor" if next_step == MANAGER_NEXT_GUI else "cli_executor",
-                round_index, executor_prompt,
-            )
         _write_local(round_dir / "executor_prompt.txt", executor_prompt)
         await _write_remote_round_text(env, config, round_index, "executor_prompt.txt", executor_prompt)
         _append_event(
@@ -806,8 +772,6 @@ async def _run_impl(
             executor_budget,
             live_trajectory_path=str(round_dir / "executor_raw_trajectory.jsonl"),
         )
-        if skill_session is not None:
-            skill_session.record_episode(executor_result)
         executor_episode_root = log_dir / (
             "gui_executor_episodes" if next_step == MANAGER_NEXT_GUI else "cli_executor_episodes"
         )
@@ -932,30 +896,6 @@ async def _run_impl(
             max_executor_output_chars=config.auditor_output_chars,
             language=config.prompt_language,
         )
-        if skill_session is not None:
-            context = await skill_session.route(
-                "gui_auditor" if next_step == MANAGER_NEXT_GUI else "cli_auditor",
-                auditor_prompt, round_index,
-                _skill_routing_brief(
-                    task_goal=plan_text, current_state=current_task_state,
-                    rounds=rounds, related_evidence=related_auditor_reports,
-                    executor_output=executor_output,
-                ),
-            )
-            if context:
-                auditor_prompt = build_role_auditor_prompt(
-                    task=task, plan_text=plan_text, executor_output=executor_output,
-                    next_step=next_step, task_state=current_task_state,
-                    task_contract=current_task_contract,
-                    related_auditor_reports=related_auditor_reports,
-                    workspace_path=config.workspace_path,
-                    max_executor_output_chars=config.auditor_output_chars,
-                    language=config.prompt_language, skill_context=context,
-                )
-            skill_session.record_injected_prompt(
-                "gui_auditor" if next_step == MANAGER_NEXT_GUI else "cli_auditor",
-                round_index, auditor_prompt,
-            )
         _write_local(round_dir / "auditor_input.txt", auditor_prompt)
         await _write_remote_round_text(env, config, round_index, "auditor_input.txt", auditor_prompt)
         _append_event(
@@ -972,8 +912,6 @@ async def _run_impl(
             auditor_budget,
             live_trajectory_path=str(round_dir / "auditor_raw_trajectory.jsonl"),
         )
-        if skill_session is not None:
-            skill_session.record_episode(auditor_result)
         auditor_episode_root = log_dir / (
             "gui_auditor_episodes" if next_step == MANAGER_NEXT_GUI else "cli_auditor_episodes"
         )
@@ -1169,34 +1107,12 @@ async def _run_impl(
         gate.block_reason = last_plan
     if gate.block_reason:
         final["block_reason"] = gate.block_reason
-    if skill_session is not None:
+    if reflector is not None:
         try:
-            if config.skill_update_enabled:
-                skill_session.record_task_outcome(final)
-            if not config.skill_update_enabled:
-                final["skill_learning"] = {
-                    "mode": "evaluation", "task_tokens": skill_session.total_tokens(),
-                    "token_usage_missing": skill_session.total_tokens() is None,
-                }
-            elif resume:
-                final["skill_learning"] = {"validation": "not_comparable_resume", "token_usage_missing": True}
-            elif skill_candidate is not None or skill_router_prompt_override is not None:
-                final["skill_learning"] = {
-                    "task_tokens": skill_session.total_tokens(),
-                    "token_usage_missing": skill_session.total_tokens() is None,
-                    "mode": "candidate_validation" if skill_candidate else "router_validation",
-                }
-            else:
-                final["skill_learning"] = await skill_session.finish(
-                    final, replay=skill_replay,
-                    reference_tokens=config.skill_reward_reference_tokens,
-                )
-        except Exception as exc:
-            logger.exception("Skill learning failed after task completion")
-            final["skill_learning"] = {
-                "action": None, "validation": "not_requested",
-                "error_stage": "skill_learning_finish", "learning_error": str(exc),
-            }
+            from .feasibility.reporting import write_summary
+            write_summary(rounds_dir, role_dir / "feasibility_summary.json")
+        except Exception:
+            logger.warning("Feasibility summary logging failed", exc_info=True)
     _write_local(role_dir / "report.json", json.dumps(final, ensure_ascii=False, indent=2) + "\n")
     _write_local(log_dir / "report.json", json.dumps(final, ensure_ascii=False, indent=2) + "\n")
     transcript = format_management_history(rounds, include_empty=True, max_chars=200_000)
@@ -2547,6 +2463,16 @@ async def _record_round(
     _append_jsonl_nofollow(rounds_jsonl, asdict(record))
     await _write_remote_round_text(env, config, record.round_index, "round.json", payload)
     _append_event(events_path, "managed_round_recorded", asdict(record))
+    sidecar = role_dir / "rounds" / f"round_{record.round_index:03d}" / "feasibility.json"
+    if record.auditor_report and sidecar.is_file():
+        try:
+            payload = json.loads(sidecar.read_text())
+            payload["subsequent_auditor"] = {"report": record.auditor_report,
+                "status": record.auditor_status,
+                "reference": f"rounds/round_{record.round_index:03d}/auditor_report.txt"}
+            _write_local(sidecar, json.dumps(payload, ensure_ascii=False, indent=2)+"\n")
+        except Exception:
+            logger.warning("Feasibility audit linkage failed", exc_info=True)
 
 
 async def _ensure_remote_layout(env: Environment, config: HarnessConfig) -> None:

@@ -1,0 +1,52 @@
+# Original LLH on the user-selected a-evolve TB2.0 Inspect collection (89 tasks).
+# Dataset adaptation preserves instructions, tests, images, resources and task timeouts.
+# Source agent/verifier timeouts are deliberately NOT overridden here.
+# Existing original LLH role prompts/MEA are used; no Skill loading or training.
+job_name: original-llh-a-evolve-tb20-local-qwen27b
+jobs_dir: output/original-a-evolve-tb20-qwen27b
+n_attempts: 1
+n_concurrent_trials: 1
+retry:
+  max_retries: 0
+environment:
+  type: docker
+agents:
+- import_path: harbor_agent:CuaHarnessClaudeCodeAgent
+  model_name: /data0/liuxule/project/models/Qwen3.8-27B
+  override_setup_timeout_sec: 18000
+  include_logs:
+  - cua_harness_claudecode_harbor/**
+  env:
+    # Client placeholder for the unauthenticated local vLLM service.
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-local}
+    ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
+    CUA_HARNESS_CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.176}
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+    LH_HARNESS_PROXY_OPENAI_BRIDGE: '0'
+    LH_HARNESS_PROXY_BEARER_AUTH: ${LLH_LOCAL_BEARER_AUTH:-0}
+  kwargs:
+    harness_model: /data0/liuxule/project/models/Qwen3.8-27B
+    verifier_model: /data0/liuxule/project/models/Qwen3.8-27B
+    max_rounds: 25
+    episode_timeout_sec: 4200
+    cli_task_timeout_sec: 1800
+    orchestrator_timeout_sec: 600
+    verifier_timeout_sec: 600
+    max_turns: 200
+    orchestrator_max_turns: 200
+    verifier_max_turns: 200
+    max_tokens: 8192
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    # Explicit for every original LLH role. Claude Code otherwise sends
+    # adaptive thinking/high effort, which this Qwen template cannot accept.
+    llm_call_kwargs:
+      extra_body:
+        thinking:
+          type: disabled
+        chat_template_kwargs:
+          enable_thinking: false
+    dashscope_wait_timeout_sec: 90
+datasets:
+- path: eval/TB-harness/datasets/a-evolve-tb20-harbor

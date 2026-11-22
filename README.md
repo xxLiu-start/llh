@@ -305,6 +305,8 @@ lh-harness doctor
 
 `doctor` is read-only. It reports the Python runtime, the agent CLIs, Node.js, and plugin state, and exits non-zero when a required check fails.
 
+Original LLH and Skill-enhanced LLH share local model support through the existing `base_url` and role model configuration. Use `lh-harness doctor --check-model-endpoint --config path/to/local.toml` for active model-ID, tool-call, streaming, error and usage probes. Both tracks stop on incompatible or unavailable endpoints without cloud fallback. See the [local model experiment guide](experiments/skill_evolution/README.md) for five isolated configurations, identical inference policies, manifests and [actual validation results](experiments/skill_evolution/validation/README.md).
+
 Agent CLIs are verified by running `<binary> --version`, not just by finding them on `PATH`, so one that is present but broken is reported as a failure instead of OK. This catches the Windows case where a Microsoft Store desktop install leaves a zero-byte `codex.exe` alias on `PATH` that is not the CLI; `doctor` prints how to fix it.
 
 It also checks [PyPI](https://pypi.org/project/lh-harness) for a newer version. To check on its own:

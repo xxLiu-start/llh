@@ -2,12 +2,21 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Reproducible skill experiments: source/configs remain reviewable; preserve
+# raw runs and local worktree metadata without accidentally committing them.
+experiments/skill_evolution/worktrees/
+experiments/skill_evolution/protection/
+experiments/skill_evolution/results/
+experiments/skill_evolution/libraries/
+experiments/skill_evolution/compat/
 .mypy_cache/
 .ruff_cache/
 .coverage
 .coverage.*
 
 # Local environments
+.cache/
 .venv/
 venv/
 env/
@@ -65,3 +74,13 @@ __pycache__/
 # 环境变量及密钥
 .env
 .env.*
+
+# Machine-specific experiment history and publication exclusions.
+/his/
+/archive/skill-evolution-preservation/
+/evaluation/validation/
+/experiments/skill_evolution/validation/
+/experiments/skill_evolution/manifests/current-paired-run.json
+/experiments/skill_evolution/manifests/training-runs.json
+/experiments/skill_evolution/manifests/enhanced-worktree-snapshot.json
+/experiments/skill_evolution/manifests/delivery.json

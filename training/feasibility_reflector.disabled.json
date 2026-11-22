@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "mode": "disabled",
+  "skill_bank_path": "~/.lh-harness/feasibility-skills",
+  "top_k": 5,
+  "max_revision_rounds": 1,
+  "unknown_policy": "pass_through",
+  "runtime_error_policy": "fail_open",
+  "revision_exhausted_policy": "pass_through",
+  "enable_skill_learning": false,
+  "skill_validation": {
+    "enabled": true,
+    "min_support": 3,
+    "check_false_rejection": true,
+    "check_cross_task_transfer": true
+  }
+}

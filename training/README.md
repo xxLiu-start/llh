@@ -1,3 +1,5 @@
+> Legacy Skill injection and online training entry points are archived under `archive/legacy_skills/`. The old-method sections below are historical. Use [Feasibility Reflector](../docs/feasibility_reflector.md) for the replacement. Original evaluation scripts are unchanged.
+
 # SkillBank train/test split
 
 Training uses `train_dataset/terminal-bench-pro`. Testing uses the original Terminal-Bench 2.1 task directory, `eval/TB-harness/datasets/terminal-bench-2-1/tasks`. The new test config loads the learned bank with updates disabled.

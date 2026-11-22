@@ -1,0 +1,59 @@
+# Both tracks use this SAME explicit local policy proxy; no cloud fallback.
+# Start: python -m lh_harness.local_gateway --config <this-file> --port 8011
+# Replace the model ID only after checking /v1/models (aliases are not inferred).
+[run]
+agent = "codex"
+model = "/data0/liuxule/project/models/Qwen3.8-27B"
+base_url = "http://127.0.0.1:8011/v1"
+env = "local"
+max_rounds = 25
+dashboard = false
+
+[local_model]
+enabled = true
+protocol = "responses"
+upstream_base_url = "http://127.0.0.1:8010/v1"
+serving_framework = "vllm"
+context_length = 1000000
+minimum_context_length = 32768
+max_output_tokens = 8192
+minimum_output_tokens = 2048
+temperature = 0.6
+top_p = 0.95
+concurrency = 1
+request_timeout = 120
+tokenizer_path = "/data0/liuxule/project/models/Qwen3.8-27B"
+# Metadata is filled from the live service or explicit operator evidence.
+# Do not put invented serving_version, weights_sha256, quantization, or GPU values here.
+
+[local_model.reasoning]
+enable_thinking = false
+
+[local_model.tool_calling]
+mode = "auto"
+parallel_tool_calls = false
+
+
+[skills]
+enabled = true
+library_dir = "experiments/skill_evolution/libraries/all_roles"
+tokenizer_path = "/data0/liuxule/project/models/Qwen3.8-27B"
+phase = "train"
+max_per_role = "unlimited"
+token_budget_per_role = "unlimited"
+
+[skills.training]
+enabled = true
+train_roles = ["manager", "executor", "auditor"]
+batch_size = 5
+min_independent_tasks = 1
+learn_from_success = true
+learn_from_failure = true
+
+[skills.usage]
+enabled = true
+use_roles = ["manager", "executor", "auditor"]
+
+[skills.router]
+method = "bm25"
+max_skills_per_role = "unlimited"
