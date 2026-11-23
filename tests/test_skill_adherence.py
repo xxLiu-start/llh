@@ -165,6 +165,95 @@ def test_unknown_injected_version_is_reported_without_model_call(tmp_path):
 
 
 
+
+
+def test_partial_round_makes_mixed_complete_and_partial_trace_conservative(tmp_path):
+    library = SkillLibrary(tmp_path / "library")
+    skill = library.put(make_skill())
+    bundle, _ = make_bundle(skill, partial=True, timeout=False)
+    bundle["evidence"]["trajectory:executor:complete"] = {
+        "role": "executor",
+        "text": "line 1 shell: inspect current state",
+        "source_sha256": "c" * 64,
+        "completeness": "complete",
+    }
+    bundle["partial_rounds"] = [{"round_index": 2, "complete": False}]
+    bundle["trajectories"] = {"executor": [{"reference": "round_001/task_raw_trajectory.jsonl"}]}
+    bundle["partial_trajectories"] = {"executor": [{"reference": "round_002/task_raw_trajectory.jsonl"}]}
+    model = AdherenceModel(status="not_followed")
+
+    result = analyze_injected_skills(bundle, library, model, roles=["executor"])
+
+    assessment = result["assessments"][0]
+    assert assessment["status"] == "insufficient_evidence"
+    assert assessment["skipped_steps"] == []
+    assert assessment["unassessed_steps"] == skill.procedure
+    assert model.calls[0][2]["skills"][0]["partial_execution"] is True
+    assert model.calls[0][2]["skills"][0]["trajectory_evidence"][0]["reference"].startswith("partial:")
+
+
+def test_partial_role_output_without_a_trajectory_cannot_prove_adherence(tmp_path):
+    library = SkillLibrary(tmp_path / "library")
+    skill = library.put(make_skill())
+    bundle, _ = make_bundle(skill, trace=False)
+    bundle["evidence"]["partial:round=2:executor:output"] = {
+        "role": "executor",
+        "text": "I inspected the error and changed the command successfully.",
+        "source_sha256": "d" * 64,
+    }
+    model = AdherenceModel()
+
+    result = analyze_injected_skills(bundle, library, model, roles=["executor"])
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["model_calls"] == 0
+    assert result["unavailable_skills"][0]["reason"] == "missing role trajectory evidence"
+
+
+def test_skill_not_injected_in_every_role_episode_is_not_attributed_to_all_traces(tmp_path):
+    library = SkillLibrary(tmp_path / "library")
+    skill = library.put(make_skill())
+    bundle, _ = make_bundle(skill)
+    bundle["skill_usage"][0]["injections"].append({
+        "role": "executor", "modality": "cli", "skills": [], "versions": [],
+    })
+    bundle["trajectories"] = {"executor": [
+        {"reference": "round_001/task_raw_trajectory.jsonl"},
+        {"reference": "round_002/task_raw_trajectory.jsonl"},
+    ]}
+    model = AdherenceModel()
+
+    result = analyze_injected_skills(bundle, library, model, roles=["executor"])
+
+    assert result["status"] == "unavailable"
+    assert result["model_calls"] == 0
+    assert "not injected in every role episode" in result["unavailable_skills"][0]["reason"]
+
+
+def test_skill_injected_in_each_role_episode_can_use_aggregated_role_traces(tmp_path):
+    library = SkillLibrary(tmp_path / "library")
+    skill = library.put(make_skill())
+    bundle, _ = make_bundle(skill)
+    bundle["skill_usage"][0]["injections"].append({
+        "role": "executor", "modality": "cli", "skills": [skill.key], "versions": [1],
+    })
+    bundle["evidence"]["trajectory:executor:1"] = {
+        "role": "executor",
+        "text": "line 1 shell: inspect current state before retry",
+        "source_sha256": "e" * 64,
+    }
+    bundle["trajectories"] = {"executor": [
+        {"reference": "round_001/task_raw_trajectory.jsonl"},
+        {"reference": "round_002/task_raw_trajectory.jsonl"},
+    ]}
+    model = AdherenceModel()
+
+    result = analyze_injected_skills(bundle, library, model, roles=["executor"])
+
+    assert result["status"] == "completed"
+    assert result["assessments"][0]["injection_count"] == 2
+
+
 def test_adherence_usage_is_included_in_offline_learning_cost():
     usage = normalize({"input_tokens": 11, "output_tokens": 7})
     report = summarize([{"role": "adherence", "usage": usage}])

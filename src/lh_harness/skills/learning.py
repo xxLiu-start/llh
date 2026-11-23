@@ -21,7 +21,7 @@ LEGACY_POLICY_SHA256 = {'40635d1ef195716907fc7aa31020e4f3a940b2f0c98a7f93e7353c6
 
 def policy_record():
     root = Path(__file__).parent
-    names = ("experience.py", "learning_evidence.py", "attribution.py", "adherence.py", "learning.py", "proposer.py", "prompts.py", "curator.py", "schema.py", "client.py")
+    names = ("experience.py", "learning_evidence.py", "attribution.py", "adherence.py", "learning.py", "proposer.py", "prompts.py", "curator.py", "schema.py", "client.py", "library.py", "integration.py", "trajectory_compactor.py", "statistics.py")
     return {"version": LEARNING_POLICY_VERSION,
             "source_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names},
             "reviewed_roles": list(ROLES), "agent_timeout": "negative-only review of recorded actions corroborated by clean audits or actual verifier failures; unfinished rounds explicitly partial",

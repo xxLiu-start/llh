@@ -3,14 +3,8 @@ name: Skill training tests
 on:
   push:
     branches:
-      - codex/skill-training-quality-2026-11-22
+      - main
   pull_request:
-    paths:
-      - "src/lh_harness/skills/**"
-      - "tests/**"
-      - "experiments/skill_evolution/**"
-      - "pyproject.toml"
-      - ".github/workflows/skill-training-tests.yml"
 
 permissions:
   contents: read
