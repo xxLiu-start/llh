@@ -197,13 +197,22 @@ def extract_run(root, *, task_id, dataset, split="train"):
     eligible['review_allowed'] = bool(positive or negative)
     skill_usage = [json.loads(path.read_text()) for path in root.rglob("skill_usage.json")]
     for ledger_index, usage_ledger in enumerate(skill_usage):
-        for call_index, call in enumerate(usage_ledger.get("injections", [])):
+        if not isinstance(usage_ledger, dict):
+            continue
+        injections = usage_ledger.get("injections", [])
+        if not isinstance(injections, list):
+            continue
+        for call_index, call in enumerate(injections):
+            if not isinstance(call, dict):
+                continue
             # Only this extractor may create a trajectory reference. Never
-            # trust a reference copied into the raw usage ledger.
+            # trust a reference copied into the raw usage ledger or expose
+            # absolute local paths to the learning model.
             call.pop("trajectory_reference", None)
             call.pop("trajectory_completeness", None)
+            trajectory_status = call.pop("trajectory_status", None)
+            raw_path = call.pop("trajectory_path", None)
             role = call.get("role")
-            raw_path = call.get("trajectory_path")
             if role not in aliases or not isinstance(raw_path, str) or not raw_path:
                 continue
             candidate = Path(raw_path)
@@ -224,7 +233,7 @@ def extract_run(root, *, task_id, dataset, split="train"):
             if not observed:
                 continue
             source_digest = hashlib.sha256(trajectory_path.read_bytes()).hexdigest()
-            partial = call.get("trajectory_status") != "done"
+            partial = trajectory_status != "done"
             prefix = "partial" if partial else "trajectory"
             reference = f"{prefix}:{role}:injection:{ledger_index}:{call_index}"
             refs[reference] = {"role": role, "text": redact("\n".join(observed)),

@@ -84,7 +84,7 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         options = []
         ordered_refs = list(own_refs)
         ordered_refs.extend(ref for ref, src in evidence.items()
-                            if ref not in own_refs and src.get("role") in allowed and
+                            if ref not in own_refs and src.get("role") in allowed and src.get("role") != skill.role and
                             ref.startswith(("trajectory:", "partial:", "rounds.jsonl:", "benchmark-verifier")))
         for ref in ordered_refs[:MAX_SOURCES_PER_SKILL]:
             src = evidence[ref]
