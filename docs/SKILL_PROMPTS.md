@@ -4,11 +4,11 @@
 
 服务端原生 JSON Schema 与本地字段、权限、证据、长度校验同时生效。证据对象由真实引用与逐字摘录选项组成；不解析自由文本字段。
 
-## 当前策略：evidence-aware-negative-learning-v4
+## 当前策略：evidence-aware-role-skill-benefit-v5
 
 每题评分后独立运行逐角色 Review 和 Proposer，暂存 Proposal，不写库。Batch 结束后才运行 Curator，
 同时参考本批同角色的全部 Proposal 做审核、跨任务归纳与去重。一次共享 Review 调用分别检查三个角色，全局 primary_role 不再独占学习机会。
-只对启用训练且证据合格的角色调用 Proposer/Curator；证据、权限和长度校验保留。单任务经验经 Curator 接纳即可 Active。负面经验单独准入，NONE/DEFER 必须给出 reason，partial 记录不作为完成证据。
+只对启用训练且证据合格的角色调用 Proposer/Curator；证据、权限和长度校验保留。Curator 接纳的单任务经验先进入 Candidate，至少两个不同任务指纹支持后才能 Active。Adherence Analyzer 根据实际注入版本和角色轨迹检查 Skill 是否遵循；注入不等于使用，遵循也不等于任务成功。负面经验单独准入，NONE/DEFER 必须给出 reason，partial 记录不作为完成证据。
 
 ### 逐角色 Review 完整 Prompt
 
@@ -96,6 +96,21 @@ Set requirements_covered true only when the audit body supports EVERY original
 task requirement. A clean control header or success claim alone is insufficient.
 ```
 
+## Skill Adherence Analyzer
+
+The training-only Adherence Analyzer reads the exact Skill version from the
+injection ledger and compares its procedure only with the exact episode trajectory
+recorded for each injection. It never attributes unrelated episodes to that Skill.
+It classifies procedure steps as followed, skipped, not applicable or unassessed.
+An injection record is not evidence of use; task success is not evidence of
+adherence; a partial trace cannot prove that later steps were skipped. Every
+classification cites exact source quotes, including at least one quote from the
+role's own injected-episode trajectory. Missing history, a missing episode path,
+or an unmatched injection produces an unavailable/insufficient result rather
+than a guessed label. Absolute local paths are removed from model-visible bundles.
+Its token usage is
+counted as offline learning cost, not Benchmark execution cost.
+
 ## Success branch
 
 ```text
@@ -175,15 +190,16 @@ Review the current proposal in that batch context. MERGE/UPDATE targets must
 exist in existing; later proposals will be reviewed against accepted earlier
 ones. Never invent an unprocessed target, pre-approve unsupported lessons, or
 count other task proposals as evidence for a technique they do not demonstrate.
-ACCEPT admits a valid proposal as an Active Skill by default, even when it is
-supported by one task. No mandatory two-task activation threshold applies.
-Evaluate transferable quality and grounded independent audit evidence; a single
-source task is not by itself a reason to reject or defer a valid technique.
+ACCEPT means the proposal passes content curation, not automatic activation.
+A Skill remains Candidate until at least two different independent task
+fingerprints support the technique. Repeated rounds, retries and seeds of one
+task count once. A single-task proposal may remain a Candidate.
 Check generalization, causal role, modality, duplication, token cost and
 preservation of existing capabilities. Positive lessons require independent
 audit evidence; negative lessons may use qualified benchmark failures. proposal_context
-marks negative proposals as not_validated repairs. Such lessons may teach an
-evidenced mistake and a prevention/diagnostic check without a demonstrated fix.
+marks negative proposals as not_validated repairs and may include skill_adherence.
+Do not blame Skill content when the injected Skill was not followed. If it was
+followed but the task failed, require causal evidence before UPDATE.
 Do not reject solely because the failed task never exercised a successful repair.
 Reject invented success claims and unsupported causal attribution. Partial records
 prove only the actions actually saved. No lesson may change MEA permissions or protocol.

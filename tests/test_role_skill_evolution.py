@@ -36,6 +36,8 @@ def test_library_candidate_promotion_versions_rollback_and_freeze(tmp_path):
     lib=SkillLibrary(tmp_path)
     one=lib.put(skill(tasks=("task-a",)),min_support=2)
     assert one.status=="candidate" and not lib.list()
+    single=skill(name="single-support",tasks=("task-a",));single.status="active"
+    assert lib.put(single).status=="candidate"
     two=lib.put(skill())
     assert two.version==2 and two.status=="active"
     restored=lib.rollback(two.key,1)
@@ -153,15 +155,21 @@ def test_only_usage_injects_and_original_adapter_protocol_is_unchanged(tmp_path)
     lib=SkillLibrary(tmp_path/'lib');lib.put(skill());lib.freeze(test_task_ids=['unseen'])
     cfg=Settings(enabled=True,library_dir=str(lib.root),phase='test',training={'enabled':False},usage={'enabled':True,'use_roles':['executor']})
     session=SkillSession(cfg,tmp_path/'run',counter=lambda text:len(text.split()))
+    stream=tmp_path/'run'/'episodes'/'ep001'/'claude_stream.jsonl'
+    stream.parent.mkdir(parents=True)
+    stream.write_text(json.dumps({'type':'assistant','content':[{'type':'tool_use','name':'Bash','input':{'command':'inspect state'}}]})+'\n')
     class Adapter:
         sentinel='original permissions'
         async def run_episode(self,prompt,*args,**kwargs):
             self.prompt=prompt
-            return EpisodeResult('done',metadata={'usage':{'input_tokens':10,'output_tokens':3}})
+            return EpisodeResult('done',metadata={'usage':{'input_tokens':10,'output_tokens':3},
+                                                   'claude_stream_path':str(stream)})
     a=Adapter();wrapped=session.wrap('cli_executor',a)
     result=asyncio.run(wrapped.run_episode('python test'))
     assert 'advisory_role_skills' in a.prompt and wrapped.sentinel=='original permissions'
     assert result.status=='done' and session.records[0]['usage']['status']=='reported'
+    injection=json.loads((tmp_path/'run/skill_usage.json').read_text())['injections'][0]
+    assert injection['trajectory_path']==str(stream) and injection['trajectory_status']=='done'
     assert json.loads((tmp_path/'run/token_usage.json').read_text())['runtime']['total_tokens']==13
     b=Adapter();asyncio.run(session.wrap('manager',b).run_episode('original input'))
     assert b.prompt=='original input'
@@ -251,10 +259,29 @@ def test_curator_accepts_single_task_skill_and_reject_defer_remain_unavailable(t
     result=curate(skill(tasks=('task-a',)),lib,model)
     assert result['changed']==(action=='ACCEPT')
     if action=='ACCEPT':
-        assert lib.list()[0].status=='active' and lib.list()[0].support==1
+        assert lib.list()==[]
+        candidate=lib.list(candidates=True)[0]
+        assert candidate.status=='candidate' and candidate.support==1
         chosen, _, _ = SkillRouter(lib,settings(ROLES)).select('executor','cli','python test')
-        assert len(chosen)==1
+        assert chosen==[]
     else:assert lib.list(candidates=True)==[]
+
+
+def test_second_independent_task_promotes_candidate_to_active(tmp_path):
+    lib=SkillLibrary(tmp_path);model=Model(curation='ACCEPT')
+    first=curate(skill(tasks=('task-a',)),lib,model)
+    assert first['status']=='candidate' and lib.list()==[]
+    second=curate(skill(tasks=('task-b',)),lib,model)
+    assert second['status']=='active' and second['support']==2
+    assert len(lib.list())==1 and lib.list()[0].support==2
+
+
+def test_repeated_run_of_same_task_does_not_promote_candidate(tmp_path):
+    lib=SkillLibrary(tmp_path);model=Model(curation='ACCEPT')
+    curate(skill(tasks=('task-a',)),lib,model)
+    second=curate(skill(tasks=('task-a',)),lib,model)
+    assert second['status']=='candidate' and second['support']==1
+    assert lib.list()==[] and len(lib.list(candidates=True))==1
 
 
 def test_merge_preserves_procedures_and_forbids_cross_role_or_modality():
@@ -309,10 +336,31 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     run=tmp_path/'run';(run/'role_orchestration').mkdir(parents=True)
     audit='Status: complete\nIntegrity: clean\nContract audit: aligned\nAudit facts: inspected the actual output.\nBlocking constraints: none\n'
     ledger=run/'role_orchestration/rounds.jsonl';ledger.write_text(json.dumps({'round_index':1,'plan_text':'Inspect a Python assertion','executor_output':'Execution completed','auditor_report':audit})+'\n')
+    trajectory_dir=run/'role_orchestration/rounds/round_001';trajectory_dir.mkdir(parents=True)
+    (trajectory_dir/'task_raw_trajectory.txt').write_text(
+        json.dumps({'type':'tool_use','name':'shell','input':{'command':'inspect current state'}})+'\n'+
+        json.dumps({'type':'result','usage':{'input_tokens':3,'output_tokens':2}})+'\n')
+    usage_dir=run/'agent'/'skill_evolution';usage_dir.mkdir(parents=True)
+    (usage_dir/'skill_usage.json').write_text(json.dumps({'injections':[
+        {'role':'executor','skills':['executor/cli/inspect-before-retry'],
+         'versions':[1],'trajectory_path':str(trajectory_dir/'task_raw_trajectory.txt'),'trajectory_status':'done'},
+        {'role':'executor','skills':[],'versions':[],
+         'trajectory_path':str(trajectory_dir/'task_raw_trajectory.txt'),'trajectory_status':'done'}]}))
     (run/'result.json').write_text(json.dumps({'task_name':'task-a','verifier_result':{'rewards':{'reward':1}}}))
     b=extract_run(run,task_id='task-a',dataset='fixture-v1')
-    assert b['outcome']=='success' and b['runtime']['role_tokens']['executor']['status']=='unavailable'
-    assert len(b['evidence'])==4 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
+    assert b['outcome']=='success' and b['runtime']['role_tokens']['executor']['status']=='reported'
+    assert b['runtime']['role_tokens']['executor']['total_tokens']==5
+    assert len(b['evidence'])==6 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
+    assert b['evidence']['trajectory:executor:0']['role']=='executor'
+    assert 'inspect current state' in b['evidence']['trajectory:executor:0']['text']
+    injection=b['skill_usage'][0]['injections'][0]
+    assert injection['trajectory_reference']=='trajectory:executor:injection:0:0'
+    assert 'trajectory_path' not in injection and 'trajectory_status' not in injection
+    assert injection['trajectory_reference'] in b['evidence']
+    empty_call=b['skill_usage'][0]['injections'][1]
+    assert 'trajectory_reference' not in empty_call
+    assert 'trajectory_path' not in empty_call and 'trajectory_status' not in empty_call
+    assert 'inspect current state' in b['evidence'][injection['trajectory_reference']]['text']
     with pytest.raises(ValueError,match='task ID'):extract_run(run,task_id='false-alias',dataset='fixture-v1')
 
 
@@ -340,7 +388,7 @@ def test_default_skill_configuration_uses_offline_library_not_legacy_task_traini
     value=validate_skills({'enabled':True,'training':{'enabled':True,'train_roles':['executor']},
                            'usage':{'enabled':True,'use_roles':['manager','executor','auditor']}})
     assert 'library_dir' in value and 'bank' not in value
-    assert value['training']['min_independent_tasks']==1
+    assert value['training']['min_independent_tasks']==2
 
 
 def test_disabled_skills_do_not_construct_or_call_the_router(tmp_path,monkeypatch):

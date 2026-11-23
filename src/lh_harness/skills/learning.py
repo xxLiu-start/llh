@@ -9,23 +9,24 @@ from pathlib import Path
 
 from .attribution import review_roles, role_evidence_valid
 from .experience import checked_evidence
+from .adherence import analyze_injected_skills
 from .proposer import propose
 from .curator import curate, general_curate
 from .library import atomic_json
 from .schema import ROLES, Skill, sha
 
-LEARNING_POLICY_VERSION = "evidence-aware-negative-learning-v4"
+LEARNING_POLICY_VERSION = "evidence-aware-role-skill-benefit-v5"
 LEGACY_POLICY_SHA256 = {'40635d1ef195716907fc7aa31020e4f3a940b2f0c98a7f93e7353c6d713f9c5f'}
 
 
 def policy_record():
     root = Path(__file__).parent
-    names = ("experience.py", "learning_evidence.py", "attribution.py", "learning.py", "proposer.py", "prompts.py", "curator.py", "schema.py", "client.py")
+    names = ("experience.py", "learning_evidence.py", "attribution.py", "adherence.py", "learning.py", "proposer.py", "prompts.py", "curator.py", "schema.py", "client.py", "library.py", "integration.py", "trajectory_compactor.py", "statistics.py")
     return {"version": LEARNING_POLICY_VERSION,
             "source_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names},
             "reviewed_roles": list(ROLES), "agent_timeout": "negative-only review of recorded actions corroborated by clean audits or actual verifier failures; unfinished rounds explicitly partial",
             "schedule": "independent task proposals, then batch-wide curation; no proposal-stage library writes",
-            "activation": "Curator acceptance activates single-task skills by default; no mandatory two-task gate",
+            "activation": "Curator acceptance keeps skills candidate until two independent dataset/task identities support the technique",
             "infrastructure_failures": "excluded", "positive_lessons": "complete independently audited success only"}
 
 
@@ -69,6 +70,7 @@ def prepare_proposals(bundles, settings, library, model, splits, *, output=None)
     before = library.digest()
     decisions, errors, proposals = [], [], []
     counts = {role: Counter() for role in ROLES}
+    adherence_summary = Counter()
     for bundle in unique.values():
         row = {"task_id": bundle["task_id"], "outcome": bundle["outcome"],
                "agent_timeout": bundle["runtime"].get("agent_timeout", False), "role_decisions": {}}
@@ -77,6 +79,14 @@ def prepare_proposals(bundles, settings, library, model, splits, *, output=None)
                 "training_enabled": role in roles, "decision": "SOURCE_OUTCOME_DISABLED"} for role in ROLES})
             decisions.append(row)
             continue
+        try:
+            adherence = analyze_injected_skills(bundle, library, model, roles=roles)
+        except Exception as exc:
+            adherence = {"status": "error", "assessments": [], "error_type": type(exc).__name__}
+            errors.append({"task_id": bundle["task_id"], "stage": "adherence", "type": type(exc).__name__, "detail": str(exc)})
+        bundle["skill_adherence"] = adherence
+        row["skill_adherence"] = adherence
+        adherence_summary[adherence.get("status", "unknown")] += 1
         try:
             review = review_roles(bundle, model)
             row["attribution"] = review
@@ -99,7 +109,7 @@ def prepare_proposals(bundles, settings, library, model, splits, *, output=None)
                     detail["decision"] = "TARGET_ROLE_NOT_ENABLED"
                 else:
                     counts[role]["proposer_calls"] += 1
-                    diagnostics = {}
+                    diagnostics = {"skill_adherence": bundle.get("skill_adherence", {})}
                     proposal, action = propose(bundle, review, role, library, model, diagnostics=diagnostics)
                     detail['proposal_diagnostics'] = diagnostics
                     detail["decision"] = "PROPOSED" if proposal else action
@@ -122,7 +132,8 @@ def prepare_proposals(bundles, settings, library, model, splits, *, output=None)
               "experiment": "online_skill_learning" if settings.phase == "online" else "offline_skill_learning",
               "learning_policy": policy_record(), "roles": sorted(roles), "reviewed_roles": list(ROLES),
               "training_settings": settings.training, "phase": settings.phase, "library_path": str(library.root),
-              "role_summary": {role: dict(counts[role]) for role in ROLES}, "independent_tasks": len(unique),
+              "role_summary": {role: dict(counts[role]) for role in ROLES},
+              "skill_adherence_summary": dict(adherence_summary), "independent_tasks": len(unique),
               "split_sha256": splits["sha256"], "library_sha256": before, "decisions": decisions,
               "bundles": list(unique.values()), "proposals": proposals, "errors": errors,
               "library_updated": False, "normal_mea_outcome_modified": False}

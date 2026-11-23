@@ -177,7 +177,8 @@ def test_negative_timeout_lessons_reach_all_selected_proposers(tmp_path):
     lib = SkillLibrary(tmp_path)
     report = learn([b], settings(ROLES), lib, model, split("task-a"), flush=True)
     assert report["errors"] == []
-    assert len(lib.list()) == 3 and all(s.support == 1 for s in lib.list())
+    assert lib.list() == []
+    assert len(lib.list(candidates=True)) == 3 and all(s.support == 1 for s in lib.list(candidates=True))
     assert all("exhausted its execution budget" in prompt for role, prompt in model.prompts)
     assert report["learning_policy"]["version"] == LEARNING_POLICY_VERSION
     history = json.loads((tmp_path / "learning_policy_history.json").read_text())

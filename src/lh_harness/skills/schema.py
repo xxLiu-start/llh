@@ -140,7 +140,7 @@ class Settings:
                 raise ValueError(f"{name}.enabled must be boolean")
             table.update(enabled=table.get("enabled", False), **{role_key: sorted(set(roles))})
             setattr(self, name, table)
-        self.training = {"batch_size": 5, "min_independent_tasks": 1, "learn_from_success": True,
+        self.training = {"batch_size": 5, "min_independent_tasks": 2, "learn_from_success": True,
                          "learn_from_failure": True, **self.training}
         if not self.enabled and (self.training["enabled"] or self.usage["enabled"]):
             raise ValueError("disabled skills conflict with enabled training or usage")

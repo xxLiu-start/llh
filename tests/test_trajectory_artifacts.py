@@ -32,6 +32,28 @@ def _codex_image_trajectory(payloads: list[bytes]) -> str:
     )
 
 
+def test_compactor_preserves_bounded_textual_tool_results(tmp_path: Path) -> None:
+    from lh_harness.skills.trajectory_compactor import compact
+
+    stream = tmp_path / "claude_stream.jsonl"
+    events = [
+        {"type": "assistant", "content": [{"type": "tool_use", "id": "tool-1",
+            "name": "Bash", "input": {"command": "cat report.txt"}}]},
+        {"type": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-1",
+            "content": [{"type": "text", "text": "report validated successfully"}]}]},
+        {"type": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-2",
+            "content": [{"type": "image", "data": "c2VjcmV0LWltYWdl", "mimeType": "image/png"}]}]},
+    ]
+    stream.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    summary = compact(stream)
+
+    assert len(summary["tool_results"]) == 2
+    assert summary["tool_results"][0]["tool_use_id"] == "tool-1"
+    assert "report validated successfully" in summary["tool_results"][0]["detail"]
+    assert "c2VjcmV0LWltYWdl" not in json.dumps(summary["tool_results"])
+
+
 def test_embedded_screenshots_become_files_and_file_references(tmp_path: Path) -> None:
     round_dir = tmp_path / "run" / "round_001"
     payloads = [b"\x89PNG\r\nfirst", b"\x89PNG\r\nsecond"]
@@ -131,3 +153,70 @@ def test_streaming_writer_pairs_codex_tool_start_and_completion_once(tmp_path: P
     assert [record["kind"] for record in records] == ["tool_use", "tool_result"]
     assert records[0]["id"] == records[1]["tool_use_id"] == "command-1"
     assert records[1]["status"] == "completed"
+
+def test_compactor_extracts_codex_mcp_gui_calls_without_image_payloads(tmp_path: Path) -> None:
+    from lh_harness.skills.trajectory_compactor import compact
+
+    stream = tmp_path / "codex.jsonl"
+    events = [
+        {
+            "type": "item.started",
+            "item": {"id": "mcp-1", "type": "mcp_tool_call", "server": "computer",
+                     "tool": "click", "arguments": {"x": 10, "y": 20}},
+        },
+        {
+            "type": "item.completed",
+            "item": {"id": "mcp-1", "type": "mcp_tool_call", "server": "computer",
+                     "tool": "click", "arguments": {"x": 10, "y": 20},
+                     "result": {"content": [
+                         {"type": "text", "text": "Clicked the target"},
+                         {"type": "image", "data": "c2VjcmV0LWltYWdl", "mimeType": "image/png"},
+                     ]}},
+        },
+    ]
+    stream.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    summary = compact(stream)
+
+    assert summary["tool_call_count"] == 1
+    assert summary["tool_calls"][0]["tool"] == "computer/click"
+    assert '"x": 10' in summary["tool_calls"][0]["input"]
+    assert len(summary["tool_results"]) == 1
+    assert "Clicked the target" in summary["tool_results"][0]["detail"]
+    assert "c2VjcmV0LWltYWdl" not in json.dumps(summary)
+
+
+def test_compactor_extracts_opencode_tool_results(tmp_path: Path) -> None:
+    from lh_harness.skills.trajectory_compactor import compact
+
+    stream = tmp_path / "opencode.jsonl"
+    events = [{
+        "type": "tool_use",
+        "part": {"type": "tool", "id": "tool-1", "tool": "computer_click",
+                 "state": {"status": "completed", "input": {"x": 10, "y": 20},
+                           "output": "Click completed"}},
+    }]
+    stream.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    summary = compact(stream)
+
+    assert summary["tool_call_count"] == 1
+    assert summary["tool_calls"][0]["tool"] == "computer_click"
+    assert "Click completed" in summary["tool_results"][0]["detail"]
+
+
+
+def test_trajectory_redaction_handles_json_credentials_and_common_tokens() -> None:
+    from lh_harness.skills.trajectory_compactor import redact
+
+    source = ('{"api_key":"api-secret-value","password":"two word password",'
+              '"access_token":"oauth-secret-value","authorization":"Bearer bearer-secret",'
+              '"github":"ghp_abcdefghijklmnopqrstuvwxyz1234567890",'
+              '"aws":"AKIA1234567890ABCDEF","safe":"ordinary"}')
+    result = redact(source)
+
+    for secret in ("api-secret-value", "two word password", "oauth-secret-value",
+                   "bearer-secret", "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+                   "AKIA1234567890ABCDEF"):
+        assert secret not in result
+    assert "ordinary" in result

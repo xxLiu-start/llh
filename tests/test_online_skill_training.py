@@ -55,7 +55,7 @@ def test_all_role_combinations_use_online_phase_and_same_inference(fixture, role
     assert p["config"]["local_model"] == original["local_model"]
     assert p["settings"].phase == "online"
     assert p["settings"].training["batch_size"] == 1
-    assert p["settings"].training["min_independent_tasks"] == 1
+    assert p["settings"].training["min_independent_tasks"] == 2
     assert set(p["settings"].training["train_roles"]) == set(p["roles"])
     assert p["settings"].max_per_role is None
     assert p["settings"].router["max_skills_per_role"] is None
@@ -138,7 +138,7 @@ class SimulatedRuntime:
         skill = Skill("cancel-pending-work", role, "shared" if role == "manager" else "cli",
             "Cancel pending work before awaiting cleanup.", ["cancel"], ["Pending work exists."], ["Cancel queued work."],
             ["Verify pending work did not start."], [], "Applicable to bounded asynchronous task queues.", evidence=evidence, status="active")
-        SkillLibrary(self.p["output"] / "library").put(skill)
+        SkillLibrary(self.p["output"] / "library").put(skill, min_support=2)
         return {"attempted": True, "returncode": 0, "report": {"experiment": "online_skill_learning"}}
 
     def learn_batch(self, rows, output):
@@ -168,11 +168,11 @@ def test_each_task_is_graded_then_learned_before_next_and_reuses_only_past_skill
     code, manifest = execute(p, runtime)
     assert code == 0
     assert runtime.events == [(stage, task) for task in ["a", "b", "c"] for stage in ["execute", "graded", "reflect", "learn"]]
-    assert runtime.used == [("a", []), ("b", ["cancel-pending-work"]), ("c", ["cancel-pending-work"])]
+    assert runtime.used == [("a", []), ("b", []), ("c", ["cancel-pending-work"])]
     rows = manifest["tasks"]
     assert rows[0]["library_after"] == rows[1]["library_before"]
     assert rows[1]["library_after"] == rows[2]["library_before"]
-    assert rows[0]["library_after"]["active_skills"] == 1
+    assert rows[0]["library_after"]["active_skills"] == 0
     assert rows[1]["library_after"]["active_skills"] == 1
     source = json.loads((p["output"] / "library/online_provenance.json").read_text())
     assert source["observed_task_ids"] == ["a", "b", "c"]
@@ -435,6 +435,19 @@ def test_five_task_batches_hold_library_fixed_and_flush_final_partial(fixture):
     first_curation = next(i for i, event in enumerate(runtime.events) if event[0] == 'learn')
     assert runtime.events[:first_curation] == [(stage, task) for task in names[:5] for stage in ('execute', 'graded', 'reflect')]
     assert runtime.events[first_curation:first_curation+5] == [('learn', task) for task in names[:5]]
+
+
+def test_online_candidate_is_not_injected_until_two_independent_tasks_support_it(fixture):
+    names = many_tasks(fixture, 3)
+    p = online.plan(args(fixture, batch_size=1))
+    runtime = SimulatedRuntime(p)
+    code, manifest = execute(p, runtime)
+
+    assert code == 0
+    assert [task for task, skills in runtime.used if not skills] == names[:2]
+    assert runtime.used[2] == (names[2], ["cancel-pending-work"])
+    active = SkillLibrary(p["output"] / "library").list()
+    assert len(active) == 1 and active[0].support == 3
 
 
 def test_task_reflection_failure_does_not_change_scores_or_skip_next_tasks(fixture):

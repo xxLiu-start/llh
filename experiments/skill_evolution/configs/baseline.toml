@@ -30,7 +30,7 @@ token_budget_per_role = "unlimited"
 enabled = false
 train_roles = []
 batch_size = 5
-min_independent_tasks = 1
+min_independent_tasks = 2
 learn_from_success = true
 learn_from_failure = true
 

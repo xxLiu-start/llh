@@ -37,14 +37,14 @@ blocked、unknown、suspect、violation 或缺少可信审计的经验不能直�
 的格式做学习侧归一化，记录转换规则并保留原文、源 SHA256 和原审计解析结果；存在实际阻断
 或矛盾说明时不归一化。学习中的负面证据资格变化不改变原始审计控制结果、Verifier 或评分。
 
-当前策略为 `evidence-aware-negative-learning-v4`。成功或失败任务均分别检查 Manager、Executor、Auditor，
+当前策略为 `evidence-aware-role-skill-benefit-v5`。成功或失败任务均分别检查 Manager、Executor、Auditor，
 一次共享归因调用返回三个独立的角色判断，primary_role 仅保留全局根因描述，不作为独占学习门槛。
 角色评审只判断证据资格，不提前以“常规操作”为由跳过 Proposer。是否有非显然、可迁移的方法由 Proposer 判断，最终由 Curator 接纳。
 每个角色的经验必须引用自己的真实行为和合格的独立佐证。正向经验继续要求 clean/aligned 独立审计；
 负面经验也可以引用 clean/needs_revision 审计或实际 Benchmark 失败。Auditor 不得只引用自身报告。
 Proposal 的 JSON Schema 固定自身行为与独立佐证的引用槽位；正向 Auditor 仍引用合格审计和
 角色外证据。NONE/DEFER 允许空证据，NEW/ENHANCE 必须通过本地独立证据校验。
-Curator 的 ACCEPT 默认将合格经验接纳为 Active Skill，单任务来源也可使用；不再设统一的两任务激活门槛。
+Curator 的 ACCEPT 只表示内容审核通过。单任务来源先保存为 Candidate；至少两个不同任务指纹的独立来源支持同一方法后，才晋升为 Active Skill。重复轮次、重试和同一任务的不同运行不增加独立支持数。
 未经 Curator 审核的 Proposal 仍留在运行目录，不能由 Router 注入；REJECT/DEFER 不激活。
 置信度不足 0.8 时 DEFER，正向经验还需 requirements_covered=true。
 未启用训练的角色仍记录检查结果，但其可学习经验标记 TARGET_ROLE_NOT_ENABLED，不调用其 Proposer/Curator，
@@ -75,7 +75,12 @@ Batch 结束后才启动 Curator：先校验所有 Proposal 的 SHA256、训练�
 
 三角色有独立规则和成功/失败分支。输出由服务端 JSON Schema 约束，再本地验证：
 证据编号必须存在，证据引文必须逐字匹配，不能包含当前任务答案、敏感信息或权限覆盖建议。
-每个 Proposer 动作均需非空 `reason`。无有效非显然经验时 NONE，应解释缺乏新颖性或与已有库
+每个 Proposer 动作均需非空 `reason`。Adherence Analyzer 先按注入记录中的 key/version 读取当时的
+Skill 历史版本，并通过每次 injection 对应的 `claude_stream_path` 将 Skill 与精确 Episode 轨迹关联，
+不把同一角色的其他 Episode 当作该 Skill 的执行证据。注入记录本身不构成遵循证据，任务成功也不等于
+Skill 被遵循。缺少历史版本、轨迹路径或无法匹配 Episode 时标记 unavailable/insufficient，不猜测。
+本地绝对路径只用于训练侧解析，不传入模型可见的 bundle。
+遵循度结论保存于 `skill_adherence`，并提供精确引用。无有效非显然经验时 NONE，应解释缺乏新颖性或与已有库
 重合的部分；证据不足时 DEFER，必须说明缺少哪类证据。结果保存于
 `role_decisions.<role>.proposal_diagnostics`，不能用空白 NONE 隐藏过滤原因。
 
@@ -87,12 +92,13 @@ Batch 结束后才启动 Curator：先校验所有 Proposal 的 SHA256、训练�
 Topic Curator 支持 ACCEPT/MERGE/UPDATE/REJECT/DEFER。General Curator 只在本轮确有该角色更新后，
 检查角色内跨主题重复。MERGE/UPDATE 取保守并集，保留旧 procedure、verification、pitfalls 和证据；
 超出 200 词则拒绝该更新，不悄悄删掉旧能力。支持数真实记录，单任务来源不得被宣称已获得跨任务验证。
+Curator ACCEPT 只完成内容审核；Candidate 至少有两个不同任务指纹支持后才会成为 Active。
 
 参考 Evo-Harness 的 [Topic Curator 与写入路径](https://github.com/A-EVO-Lab/a-evolve/blob/3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf/evo_harness/terminal_bench.py#L1158)：
-单任务 Proposal 可经 ACCEPT 直接写入；并无适用于全部 Skill 的两任务激活限制。
+上游 Evo-Harness 的 Topic Curator 可接受单任务 Proposal。本项目在保留单任务 Candidate 的同时采用更严格的晋升门槛：ACCEPT 不直接激活，必须有两个独立任务指纹支持后才能成为 Active。
 它的 [General Curator Prompt](https://github.com/A-EVO-Lab/a-evolve/blob/3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf/evo_harness/terminal_bench.py#L495)
 才要求从两个以上不同任务中归纳共同模式。这里不把跨任务归纳条件应用到普通角色 Skill 的接纳上。
-配置默认 `min_independent_tasks=1`；显式填写旧值 2 仍可用于复现旧实验。
+配置默认 `min_independent_tasks=2`；显式设置为 1 仅用于复现旧实验，不作为当前推荐策略。
 
 ## 冻结与后续更新
 
@@ -107,7 +113,7 @@ lh-harness skills freeze --library experiments/skill_evolution/libraries/all_rol
 
 ## Token 与成本
 
-服务端 Usage 优先；角色与离线 attribution/proposer/curator/general_curator 分开。
+服务端 Usage 优先；角色执行与离线 adherence/attribution/proposer/curator/general_curator 分开统计。Adherence 分析成本计入学习成本，不计入 Benchmark 执行成本。
 同模型 tokenizer 的 Skill 片段计数是 estimated，已经包含在角色输入中，不重复加入总 Token。
 `learning_cost.json` 包含失败调用的已返回 Usage。所有尝试的学习成本均应汇总，不能只统计最后一次成功。
 未提供价格时 API Cost 为 null；本地推理不等于硬件成本为零。
@@ -124,13 +130,13 @@ lh-harness skills freeze --library experiments/skill_evolution/libraries/all_rol
 不重新读取轨迹，不重跑 Review/Proposer。末批不足 5 题也审核。
 审核更新结束后才启动下一批。所有批次结束后自动冻结最终库，重新评估选中的全部任务；
 复测使用新环境和独立日志，`phase=test`、`training.enabled=false`，不再学习。
-同一轮使用新建且共享的库，后续任务通过原有确定性 Router 使用此前接纳的 Active Skill。
-每批学习不保证每题产生 Skill；归因和审计证据规则保持不变，单任务经验经审核即可激活。
+同一轮使用新建且共享的库，后续任务通过原有确定性 Router 使用此前接纳且达到支持门槛的 Active Skill。
+每批学习不保证每题产生 Skill；归因和审计证据规则保持不变，单任务经验经审核后先进入 Candidate。
 
 在线任务清单保存为实验独立的 `online-split.json`，不重写正式分割。
 `manifest.json` 和每批学习报告明确标记 `online_skill_learning`，成本仍单列；
 Manifest 的每题 `reflection` 记录 Proposal 路径、文件摘要、角色决策、成本和异常；`batches` 记录
-批次审核结果与更新前后库摘要。逐题 attribution/proposer 和批次 curator/general_curator 成本
+批次审核结果与更新前后库摘要。逐题 adherence/attribution/proposer 和批次 curator/general_curator 成本
 分别记录并各累加一次，尚未审核的已完成反思也计入总成本。
 最终训练集复测独立保存在 `evaluation/`，标记 `training_set_recheck`、`held_out_evaluation=false`，不能用作未见任务泛化结果。
 `library/online_provenance.json` 记录实际观察的任务，即便该题没有接纳任何 Skill。
@@ -148,7 +154,7 @@ Manifest 的每题 `reflection` 记录 Proposal 路径、文件摘要、角色�
 
 续跑前的根配置、Manifest、汇总与 Library 快照保存在原目录的 `resumes/<id>/`；新任务与 Proposal
 写入原题目目录下的 `attempt-<id>/`，批次编号接着递增，旧评分与轨迹不覆盖。原两任务激活配置
-在保存旧配置后升级为当前的单任务审核激活策略。已冻结或已有最终复测的目录禁止继续训练。
+在保存旧配置后升级为当前的双独立任务晋升策略。已冻结或已有最终复测的目录禁止继续训练。
 
 当前成功率仅按各题最新选定结果统计，被替代尝试放入 `superseded_tasks`；运行、反思和审核成本
 包含所有尝试且各计一次。缺失 Usage 仍为 unavailable/null。已观察任务集合取并集，续跑不能

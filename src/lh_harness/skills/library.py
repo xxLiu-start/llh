@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .schema import Skill, ROLES, sha, canonical
+from .schema import Skill, ROLES, sha, canonical, identifier
 
 
 def atomic_json(path, value):
@@ -62,7 +62,29 @@ class SkillLibrary:
             raise ValueError("skill lookup must identify exactly one role/modality/name")
         return found[0]
 
-    def put(self, skill: Skill, *, min_support=1):
+    def get_version(self, key, version):
+        """Load the immutable Skill version recorded when it was injected."""
+        parts = key.split("/") if isinstance(key, str) else []
+        if len(parts) != 3 or parts[0] not in ROLES or parts[1] not in {"shared", "cli", "gui"} or type(version) is not int or version < 1:
+            raise ValueError("invalid skill key or version")
+        try:
+            name = identifier(parts[2])
+        except ValueError as exc:
+            raise ValueError("invalid skill key or version") from exc
+        path = self.root / ".history" / parts[0] / parts[1] / name / f"{version:06d}.json"
+        if path.is_symlink():
+            raise ValueError("skill history symlinks are forbidden")
+        if path.is_file():
+            skill = Skill.from_dict(json.loads(path.read_text()))
+        else:
+            skill = self.get(key)
+            if skill.version != version:
+                raise KeyError(f"skill version unavailable: {key}@{version}")
+        if skill.key != key or skill.version != version:
+            raise ValueError("skill history identity mismatch")
+        return skill
+
+    def put(self, skill: Skill, *, min_support=2):
         if type(min_support) is not int or min_support < 1:
             raise ValueError("minimum task support must be a positive integer")
         with self.lock():

@@ -33,7 +33,9 @@ def run(tmp_path):
                     'auditor':{'training_enabled':False,'decision':'TARGET_ROLE_NOT_ENABLED'}}
     reflection={'decisions':[{'task_id':'a','role_decisions':role_decisions}]}
     atomic_json(proposals/'learning_report.json',reflection)
-    atomic_json(proposals/'proposals.json',{**reflection,'proposals':[{'task_id':'a','role':'manager','proposal_id':'p1',
+    adherence={'status':'completed','assessments':[{'key':'manager/shared/method','version':1,'status':'followed'}]}
+    atomic_json(proposals/'proposals.json',{**reflection,'bundles':[{'task_id':'a','skill_adherence':adherence}],
+        'proposals':[{'task_id':'a','role':'manager','proposal_id':'p1',
         'action':'NEW','skill':skill,'proposal_context':{'reason':'Useful new method'}}]})
     atomic_json(proposals/'learning_cost.json',{'total':usage(5,2),'categories':{'proposer':usage(5,2)}})
     batch=tmp_path/'learning/batch-001'
@@ -64,6 +66,7 @@ def test_per_task_tokens_success_times_used_skills_and_accepted_proposal(run):
     assert r['tokens']['injection_tokens_estimated']==6
     assert r['duration_seconds']['task_wall']==123.5 and r['duration_seconds']['agent_execution']==100
     assert r['duration_seconds']['reflection']==2.5
+    assert r['skill_adherence']=={'status':'completed','assessments':[{'key':'manager/shared/method','version':1,'status':'followed'}]}
     manager=r['roles']['manager'];u=manager['skill_usage']
     assert u['skills']==[{'key':'manager/shared/method','injection_count':2,'versions':[1,2]}]
     p=manager['skill_learning']['proposed_skills'][0]
