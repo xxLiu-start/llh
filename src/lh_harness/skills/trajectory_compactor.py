@@ -25,7 +25,7 @@ def compact(path, *, max_events=64):
         if isinstance(value, str):
             return value
         if isinstance(value, list):
-            return "\\n".join(text for item in value if (text := visible_result(item)))
+            return "\n".join(text for item in value if (text := visible_result(item)))
         if isinstance(value, dict):
             if value.get("type") == "image":
                 return "[image omitted]"
