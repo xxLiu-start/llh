@@ -350,6 +350,7 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     assert 'inspect current state' in b['evidence']['trajectory:executor:0']['text']
     injection=b['skill_usage'][0]['injections'][0]
     assert injection['trajectory_reference']=='trajectory:executor:injection:0:0'
+    assert 'trajectory_path' not in injection and 'trajectory_status' not in injection
     assert injection['trajectory_reference'] in b['evidence']
     assert 'inspect current state' in b['evidence'][injection['trajectory_reference']]['text']
     with pytest.raises(ValueError,match='task ID'):extract_run(run,task_id='false-alias',dataset='fixture-v1')
