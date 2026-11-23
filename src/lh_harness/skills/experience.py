@@ -195,6 +195,41 @@ def extract_run(root, *, task_id, dataset, split="train"):
                                        or audit['contract_audit_status']=='needs_revision')
     eligible['negative'] = bool(negative)
     eligible['review_allowed'] = bool(positive or negative)
+    skill_usage = [json.loads(path.read_text()) for path in root.rglob("skill_usage.json")]
+    for ledger_index, usage_ledger in enumerate(skill_usage):
+        for call_index, call in enumerate(usage_ledger.get("injections", [])):
+            role = call.get("role")
+            raw_path = call.get("trajectory_path")
+            if role not in aliases or not isinstance(raw_path, str) or not raw_path:
+                continue
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            try:
+                if candidate.is_symlink():
+                    continue
+                trajectory_path = candidate.resolve(strict=True)
+                relative_source = str(trajectory_path.relative_to(root))
+            except (OSError, ValueError):
+                continue
+            if not trajectory_path.is_file():
+                continue
+            summary = compact(trajectory_path)
+            observed = [f"line {item['line']} {item.get('tool', item.get('type', 'event'))}: {item.get('input', item.get('detail', ''))}"
+                        for item in [*summary["tool_calls"], *summary["errors"], *summary["final_events"]]]
+            if not observed:
+                continue
+            source_digest = hashlib.sha256(trajectory_path.read_bytes()).hexdigest()
+            partial = call.get("trajectory_status") != "done"
+            prefix = "partial" if partial else "trajectory"
+            reference = f"{prefix}:{role}:injection:{ledger_index}:{call_index}"
+            refs[reference] = {"role": role, "text": redact("\n".join(observed)),
+                "source_sha256": source_digest, "source_path": relative_source, "kind": "trajectory",
+                "completeness": "partial" if partial else "complete"}
+            call["trajectory_reference"] = reference
+            call["trajectory_completeness"] = "partial" if partial else "complete"
+            trajectories.setdefault(role, []).append({"reference": relative_source,
+                "evidence_reference": reference, "completeness": "partial" if partial else "complete", **summary})
     return {"run_id": root.name, "task_id": task_id, "dataset": dataset, "split": split,
             "modality": "gui" if any(row.get("next_step") == "gui" for row in rows) or any(v.get('modality')=='gui' for v in partial_refs.values()) else "cli",
             "task": redact(original_task), "task_fingerprint": sha(original_task),
@@ -212,7 +247,7 @@ def extract_run(root, *, task_id, dataset, split="train"):
             "partial_evidence_policy":"observed actions only; never proof of completed execution or a verified repair",
             "trajectories": trajectories, "benchmark_reward": reward, "evidence": refs, "source": str(root),
             "benchmark_verifier_summary": grading_summary, "audit_grader_disagreement": disagreement,
-            "skill_usage": [json.loads(path.read_text()) for path in root.rglob("skill_usage.json")], "skill_usage_is_completion_evidence": False}
+            "skill_usage": skill_usage, "skill_usage_is_completion_evidence": False}
 
 
 def checked_evidence(bundle, references, quotes=None):
