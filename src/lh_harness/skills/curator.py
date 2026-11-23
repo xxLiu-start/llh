@@ -18,7 +18,7 @@ def combine(prior, proposal):
     return Skill.from_dict(value)
 
 
-def curate(proposal, library, model, *, min_support=1, batch_proposals=None, proposal_context=None):
+def curate(proposal, library, model, *, min_support=2, batch_proposals=None, proposal_context=None):
     existing = [s for s in library.list(proposal.role, candidates=True) if s.status != "rejected"]
     decision = validate_object(model("curator", proposal.role, CURATOR_PROMPT,
         {"proposal": proposal.to_dict(), "existing": [s.to_dict() for s in existing],
@@ -38,7 +38,7 @@ def curate(proposal, library, model, *, min_support=1, batch_proposals=None, pro
     return {**decision, "changed": True, "key": stored.key, "status": stored.status, "support": stored.support}
 
 
-def general_curate(role, library, model, *, min_support=1):
+def general_curate(role, library, model, *, min_support=2):
     skills = [s for s in library.list(role, candidates=True) if s.status != "rejected"]
     if len(skills) < 2:
         return {"action": "NONE", "reason": "fewer than two skill patterns"}

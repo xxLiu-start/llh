@@ -59,7 +59,18 @@ def extract_run(root, *, task_id, dataset, split="train"):
                 preferred = path.with_suffix(".jsonl")
                 path = preferred if preferred.exists() else path
                 seen.add(key)
-                summaries.append({"reference": str(path.relative_to(root)), **compact(path)})
+                summary = compact(path)
+                source_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                relative_source = str(path.relative_to(root))
+                evidence_reference = f"trajectory:{role}:{len(summaries)}"
+                summary["evidence_reference"] = evidence_reference
+                summary["source_sha256"] = source_digest
+                summaries.append({"reference": relative_source, **summary})
+                observed = [f"line {x['line']} {x.get('tool', x.get('type', 'event'))}: {x.get('input', x.get('detail', ''))}"
+                            for x in [*summary["tool_calls"], *summary["errors"], *summary["final_events"]]]
+                if observed:
+                    refs[evidence_reference] = {"role": role, "text": redact("\n".join(observed)),
+                        "source_sha256": source_digest, "source_path": relative_source, "kind": "trajectory"}
                 counters.append(from_trajectory(path.read_text(errors="replace")))
         trajectories[role], usage[role] = summaries, aggregate(counters) if counters else unavailable()
     ledger_digest = hashlib.sha256(ledger.read_bytes()).hexdigest() if ledger else None

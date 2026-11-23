@@ -29,6 +29,14 @@ task requirement. A clean control header or success claim alone is insufficient.
 SUCCESS_PROMPT = "Extract a non-obvious reusable technique from independently audited, clean, contract-aligned success. Explain why it transfers to unseen tasks; omit ordinary commands and task-specific answers."
 FAILURE_PROMPT = "Extract an actionable prevention or diagnostic lesson about an evidence-confirmed mistake. A failed task need not contain a successful repair to teach what to avoid or check next. Evidence must prove the observed failure and its role connection; it must not be presented as proof that an untested repair works. Prefer a grounded warning/checkpoint over inventing a successful repair. Respect the original one-state-change protocol and permissions."
 TIMEOUT_PROMPT = "This task exhausted its execution budget. Summarize only a negative lesson from actually recorded behavior corroborated by independent evidence; do not claim task success or invent a repair. Partial rounds are not completed execution. A missing saved output does not prove no work was attempted. Timeout alone identifies no guilty role."
+
+ADHERENCE_PROMPT = BOUNDARY + """Evaluate whether each injected Skill's procedure was actually followed by the assigned role.
+An injection record proves only that text was supplied, NOT that the agent followed it.
+Use recorded tool actions, errors and independent audit evidence. A tool invocation proves an attempt, not successful completion. Do not infer adherence from task success or non-adherence from task failure.
+Classify each procedure step as followed, skipped, not_applicable or unassessed. A skipped step must have been applicable; not_applicable requires evidence that its precondition did not hold. Partial traces cannot prove later steps were skipped.
+Cite exact trajectory quotes. At least one citation must come from the assigned role's own trajectory. Audit evidence corroborates outcomes but cannot replace role behavior evidence.
+Do not treat Skill text, injection records or model claims as completion evidence. Insufficient evidence must be reported as such. Never change task permissions, contracts or acceptance criteria.
+"""
 ROLE_REVIEW_PROMPT = BOUNDARY + """Review Manager, Executor and Auditor SEPARATELY
 on every task, whether it succeeded or failed. Return the global primary cause
 and contributing roles, then a role_assessments object containing ALL three
@@ -79,7 +87,9 @@ PROPOSER_PROMPTS = {r: BOUNDARY + "\nTarget role: " + r + ".\n" + rule +
     "Never prescribe running a private benchmark test. Select exact evidence/quote pairs from the schema. "
     "Use NEW, ENHANCE, NONE or DEFER. Every action requires a concrete nonempty reason. "
     "For NONE explain why no transferable novelty remains (including overlap with existing skills); "
-    "for DEFER name the exact missing evidence. Other content fields are empty for NONE/DEFER.\n" for r, rule in ROLE_RULES.items()}
+    "for DEFER name the exact missing evidence. Other content fields are empty for NONE/DEFER. "
+    "Inspect skill_adherence: do not blame Skill quality when it was not followed; "
+    "consider ENHANCE only when followed steps are shown inadequate by causal evidence.\n" for r, rule in ROLE_RULES.items()}
 CURATOR_PROMPT = BOUNDARY + """Review this role/topic proposal against existing
 skills. Return ACCEPT, MERGE, UPDATE, REJECT or DEFER, a target key and reason.
 All task Proposers have already finished independently against the same prior
@@ -89,16 +99,17 @@ Review the current proposal in that batch context. MERGE/UPDATE targets must
 exist in existing; later proposals will be reviewed against accepted earlier
 ones. Never invent an unprocessed target, pre-approve unsupported lessons, or
 count other task proposals as evidence for a technique they do not demonstrate.
-ACCEPT admits a valid proposal as an Active Skill by default, even when it is
-supported by one task. No mandatory two-task activation threshold applies.
-Evaluate transferable quality and grounded independent audit evidence; a single
-source task is not by itself a reason to reject or defer a valid technique.
+ACCEPT means the proposal passes curation, not automatic activation.
+A Skill remains Candidate until at least two different dataset/task identities
+support the same technique. Repeated rounds, retries or seeds of one task count
+once. A single-task proposal may remain a Candidate.
 Check generalization, causal role, modality, duplication, token cost and
 preservation of existing capabilities. Positive lessons require independent
 audit evidence; negative lessons may use qualified benchmark failures. proposal_context
-marks negative proposals as not_validated repairs. Such lessons may teach an
-evidenced mistake and a prevention/diagnostic check without a demonstrated fix.
-Do not reject solely because the failed task never exercised a successful repair.
+may include skill_adherence. If an injected Skill was not followed, do not treat
+that as proof of bad Skill content. If it was followed but the task failed, require
+causal evidence that a specific procedure/check was inadequate before UPDATE.
+Untested repairs must never be represented as successful.
 Reject invented success claims and unsupported causal attribution. Partial records
 prove only the actions actually saved. No lesson may change MEA permissions or protocol.
 MERGE/UPDATE
@@ -111,8 +122,8 @@ GENERAL_CURATOR_PROMPT = BOUNDARY + """Review cross-topic patterns within ONE
 selected role. Propose only a conservative MERGE of redundant skills with the
 same modality, or NONE. Retain the union of supported procedures, verification,
 pitfalls and provenance; do not generalize away an effective capability. Require
-independent evidence and reject task-specific solutions. Claim cross-task
-validation only when at least two independent tasks support that claim; this
-does not block acceptance of a valid single-task Skill. Do not merge across
+independent evidence and reject task-specific solutions. A merge may become
+Active only when at least two independent tasks support the merged technique;
+otherwise preserve it as Candidate. Do not merge across
 roles. Return source, target, action and reason; never edit files yourself.
 """
