@@ -22,6 +22,44 @@ def compact(path, *, max_events=64):
     tools, results, errors, actions, tails = [], [], [], Counter(), []
     malformed = 0
 
+    def visible_result(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(text for item in value if (text := visible_result(item)))
+        if isinstance(value, dict):
+            if value.get("type") == "image":
+                return "[image omitted]"
+            text = value.get("text")
+            if isinstance(text, str):
+                return text
+        return ""
+
+    def legacy_steps(event):
+        """Read older LLH JSONL shapes not emitted by current provider CLIs."""
+        event_type = event.get("type")
+        if event_type == "tool_use":
+            return [{"kind": "tool_use", "id": event.get("id", ""),
+                     "name": event.get("name", "tool"), "input": event.get("input", {})}]
+        blocks = event.get("content")
+        if not isinstance(blocks, list):
+            message = event.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(blocks, list):
+            return []
+        normalized = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                normalized.append({"kind": "tool_use", "id": block.get("id", ""),
+                    "name": block.get("name", "tool"), "input": block.get("input", {})})
+            elif block.get("type") == "tool_result":
+                normalized.append({"kind": "tool_result", "tool_use_id": block.get("tool_use_id", ""),
+                    "text": visible_result(block.get("content", "")), "has_image": "[image omitted]" in visible_result(block.get("content", "")),
+                    "is_error": bool(block.get("is_error"))})
+        return normalized
+
     seen_tool_ids = set()
     with path.open(errors="replace") as source:
         for index, line in enumerate(source, 1):
@@ -47,8 +85,12 @@ def compact(path, *, max_events=64):
             collect_errors(event)
             # Reuse the harness's provider-neutral parser so Claude, Codex
             # (including MCP GUI/file-change calls), OpenCode and DeepSeek
-            # episodes all produce the same bounded evidence shape.
-            for step in parse_trajectory(line):
+            # episodes all produce the same bounded evidence shape. Retain the
+            # older top-level tool_use/content JSONL forms used by existing runs.
+            steps = parse_trajectory(line)
+            if not steps:
+                steps = legacy_steps(event)
+            for step in steps:
                 kind = step.get("kind")
                 if kind == "tool_use":
                     tool_id = str(step.get("id") or "")
