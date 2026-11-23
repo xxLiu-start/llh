@@ -112,6 +112,8 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             raise ValueError("unknown or duplicate adherence Skill identity")
         seen.add(ident)
         skill, record = next((s, r) for s, r in loaded if s.key == item["key"] and str(s.version) == item["version"])
+        own_refs = [ref for ref, source in evidence.items()
+                    if source.get("role") == skill.role and ref.startswith(("trajectory:", "partial:"))]
         ids = [f"step-{i+1}" for i in range(len(skill.procedure))]
         groups = {k: list(item[k]) for k in ("followed_steps", "skipped_steps", "not_applicable_steps", "unassessed_steps")}
         flat = [v for values in groups.values() for v in values]
