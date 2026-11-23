@@ -149,6 +149,7 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         groups["unassessed_steps"].extend(x for x in ids if x not in flat)
         # Missing steps in an interrupted/partial-only trace are unknown, not
         # evidence that the agent skipped them.
+        partial_refs = [ref for ref in own_refs if ref.startswith("partial:")]
         complete_own_trace = any(ref.startswith("trajectory:") for ref in own_refs)
         partial_execution = bool(partial_refs or not complete_own_trace)
         if partial_execution:
