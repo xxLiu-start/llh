@@ -48,6 +48,7 @@ def make_bundle(skill, *, version=1, trace=True, partial=False, timeout=False):
                 "modality": "cli",
                 "skills": [skill.key],
                 "versions": [version],
+                "trajectory_reference": ref,
             }]
         }],
     }, ref
@@ -117,7 +118,7 @@ def test_missing_role_trajectory_does_not_infer_adherence_from_injection(tmp_pat
     assert result["status"] == "insufficient_evidence"
     assert result["model_calls"] == 0
     assert model.calls == []
-    assert result["unavailable_skills"][0]["reason"] == "missing role trajectory evidence"
+    assert result["unavailable_skills"][0]["reason"] == "injected episode trajectory reference is missing or has the wrong role"
 
 
 def test_injected_historical_version_is_loaded_not_current_skill_version(tmp_path):
@@ -207,37 +208,39 @@ def test_partial_role_output_without_a_trajectory_cannot_prove_adherence(tmp_pat
 
     assert result["status"] == "insufficient_evidence"
     assert result["model_calls"] == 0
-    assert result["unavailable_skills"][0]["reason"] == "missing role trajectory evidence"
+    assert result["unavailable_skills"][0]["reason"] == "injected episode trajectory reference is missing or has the wrong role"
 
 
-def test_skill_not_injected_in_every_role_episode_is_not_attributed_to_all_traces(tmp_path):
+def test_skill_adherence_uses_only_episodes_where_skill_was_injected(tmp_path):
     library = SkillLibrary(tmp_path / "library")
     skill = library.put(make_skill())
-    bundle, _ = make_bundle(skill)
+    bundle, ref = make_bundle(skill)
     bundle["skill_usage"][0]["injections"].append({
         "role": "executor", "modality": "cli", "skills": [], "versions": [],
     })
-    bundle["trajectories"] = {"executor": [
-        {"reference": "round_001/task_raw_trajectory.jsonl"},
-        {"reference": "round_002/task_raw_trajectory.jsonl"},
-    ]}
+    bundle["evidence"]["trajectory:executor:unrelated"] = {
+        "role": "executor", "text": "line 1 shell: unrelated action", "source_sha256": "f" * 64,
+    }
     model = AdherenceModel()
 
     result = analyze_injected_skills(bundle, library, model, roles=["executor"])
 
-    assert result["status"] == "unavailable"
-    assert result["model_calls"] == 0
-    assert "not injected in every role episode" in result["unavailable_skills"][0]["reason"]
+    assert result["status"] == "completed"
+    assert result["assessments"][0]["injection_count"] == 1
+    refs = [item["reference"] for item in model.calls[0][2]["skills"][0]["trajectory_evidence"]]
+    assert refs == [ref]
 
 
 def test_skill_injected_in_each_role_episode_can_use_aggregated_role_traces(tmp_path):
     library = SkillLibrary(tmp_path / "library")
     skill = library.put(make_skill())
     bundle, _ = make_bundle(skill)
+    second_ref = "trajectory:executor:1"
     bundle["skill_usage"][0]["injections"].append({
         "role": "executor", "modality": "cli", "skills": [skill.key], "versions": [1],
+        "trajectory_reference": second_ref,
     })
-    bundle["evidence"]["trajectory:executor:1"] = {
+    bundle["evidence"][second_ref] = {
         "role": "executor",
         "text": "line 1 shell: inspect current state before retry",
         "source_sha256": "e" * 64,
@@ -252,6 +255,20 @@ def test_skill_injected_in_each_role_episode_can_use_aggregated_role_traces(tmp_
 
     assert result["status"] == "completed"
     assert result["assessments"][0]["injection_count"] == 2
+    assert len(model.calls[0][2]["skills"][0]["trajectory_evidence"]) == 2
+
+
+def test_global_role_trajectory_without_injection_link_is_not_used(tmp_path):
+    library = SkillLibrary(tmp_path / "library")
+    skill = library.put(make_skill())
+    bundle, _ = make_bundle(skill)
+    bundle["skill_usage"][0]["injections"][0].pop("trajectory_reference")
+    model = AdherenceModel()
+
+    result = analyze_injected_skills(bundle, library, model, roles=["executor"])
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["model_calls"] == 0
 
 
 def test_adherence_usage_is_included_in_offline_learning_cost():
