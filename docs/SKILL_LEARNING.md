@@ -76,8 +76,10 @@ Batch 结束后才启动 Curator：先校验所有 Proposal 的 SHA256、训练�
 三角色有独立规则和成功/失败分支。输出由服务端 JSON Schema 约束，再本地验证：
 证据编号必须存在，证据引文必须逐字匹配，不能包含当前任务答案、敏感信息或权限覆盖建议。
 每个 Proposer 动作均需非空 `reason`。Adherence Analyzer 先按注入记录中的 key/version 读取当时的
-Skill 历史版本，再依据该角色的真实轨迹判断 procedure 是否被遵循；注入记录本身不构成遵循证据，
-任务成功也不等于 Skill 被遵循。缺少角色轨迹或历史版本时标记 unavailable/insufficient，不猜测。
+Skill 历史版本，并通过每次 injection 对应的 `claude_stream_path` 将 Skill 与精确 Episode 轨迹关联，
+不把同一角色的其他 Episode 当作该 Skill 的执行证据。注入记录本身不构成遵循证据，任务成功也不等于
+Skill 被遵循。缺少历史版本、轨迹路径或无法匹配 Episode 时标记 unavailable/insufficient，不猜测。
+本地绝对路径只用于训练侧解析，不传入模型可见的 bundle。
 遵循度结论保存于 `skill_adherence`，并提供精确引用。无有效非显然经验时 NONE，应解释缺乏新颖性或与已有库
 重合的部分；证据不足时 DEFER，必须说明缺少哪类证据。结果保存于
 `role_decisions.<role>.proposal_diagnostics`，不能用空白 NONE 隐藏过滤原因。

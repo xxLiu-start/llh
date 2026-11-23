@@ -99,13 +99,16 @@ task requirement. A clean control header or success claim alone is insufficient.
 ## Skill Adherence Analyzer
 
 The training-only Adherence Analyzer reads the exact Skill version from the
-injection ledger and compares its procedure with preserved role trajectories.
+injection ledger and compares its procedure only with the exact episode trajectory
+recorded for each injection. It never attributes unrelated episodes to that Skill.
 It classifies procedure steps as followed, skipped, not applicable or unassessed.
 An injection record is not evidence of use; task success is not evidence of
 adherence; a partial trace cannot prove that later steps were skipped. Every
 classification cites exact source quotes, including at least one quote from the
-role's own trajectory. Missing history or missing role traces produce an
-unavailable/insufficient result rather than a guessed label. Its token usage is
+role's own injected-episode trajectory. Missing history, a missing episode path,
+or an unmatched injection produces an unavailable/insufficient result rather
+than a guessed label. Absolute local paths are removed from model-visible bundles.
+Its token usage is
 counted as offline learning cost, not Benchmark execution cost.
 
 ## Success branch
