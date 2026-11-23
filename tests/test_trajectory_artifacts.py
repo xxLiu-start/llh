@@ -32,6 +32,28 @@ def _codex_image_trajectory(payloads: list[bytes]) -> str:
     )
 
 
+def test_compactor_preserves_bounded_textual_tool_results(tmp_path: Path) -> None:
+    from lh_harness.skills.trajectory_compactor import compact
+
+    stream = tmp_path / "claude_stream.jsonl"
+    events = [
+        {"type": "assistant", "content": [{"type": "tool_use", "id": "tool-1",
+            "name": "Bash", "input": {"command": "cat report.txt"}}]},
+        {"type": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-1",
+            "content": [{"type": "text", "text": "report validated successfully"}]}]},
+        {"type": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-2",
+            "content": [{"type": "image", "data": "c2VjcmV0LWltYWdl", "mimeType": "image/png"}]}]},
+    ]
+    stream.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    summary = compact(stream)
+
+    assert len(summary["tool_results"]) == 2
+    assert summary["tool_results"][0]["tool_use_id"] == "tool-1"
+    assert "report validated successfully" in summary["tool_results"][0]["detail"]
+    assert "c2VjcmV0LWltYWdl" not in json.dumps(summary["tool_results"])
+
+
 def test_embedded_screenshots_become_files_and_file_references(tmp_path: Path) -> None:
     round_dir = tmp_path / "run" / "round_001"
     payloads = [b"\x89PNG\r\nfirst", b"\x89PNG\r\nsecond"]
