@@ -153,15 +153,21 @@ def test_only_usage_injects_and_original_adapter_protocol_is_unchanged(tmp_path)
     lib=SkillLibrary(tmp_path/'lib');lib.put(skill());lib.freeze(test_task_ids=['unseen'])
     cfg=Settings(enabled=True,library_dir=str(lib.root),phase='test',training={'enabled':False},usage={'enabled':True,'use_roles':['executor']})
     session=SkillSession(cfg,tmp_path/'run',counter=lambda text:len(text.split()))
+    stream=tmp_path/'run'/'episodes'/'ep001'/'claude_stream.jsonl'
+    stream.parent.mkdir(parents=True)
+    stream.write_text(json.dumps({'type':'assistant','content':[{'type':'tool_use','name':'Bash','input':{'command':'inspect state'}}]})+'\\n')
     class Adapter:
         sentinel='original permissions'
         async def run_episode(self,prompt,*args,**kwargs):
             self.prompt=prompt
-            return EpisodeResult('done',metadata={'usage':{'input_tokens':10,'output_tokens':3}})
+            return EpisodeResult('done',metadata={'usage':{'input_tokens':10,'output_tokens':3},
+                                                   'claude_stream_path':str(stream)})
     a=Adapter();wrapped=session.wrap('cli_executor',a)
     result=asyncio.run(wrapped.run_episode('python test'))
     assert 'advisory_role_skills' in a.prompt and wrapped.sentinel=='original permissions'
     assert result.status=='done' and session.records[0]['usage']['status']=='reported'
+    injection=json.loads((tmp_path/'run/skill_usage.json').read_text())['injections'][0]
+    assert injection['trajectory_path']==str(stream) and injection['trajectory_status']=='done'
     assert json.loads((tmp_path/'run/token_usage.json').read_text())['runtime']['total_tokens']==13
     b=Adapter();asyncio.run(session.wrap('manager',b).run_episode('original input'))
     assert b.prompt=='original input'
@@ -332,6 +338,9 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     (trajectory_dir/'task_raw_trajectory.txt').write_text(
         json.dumps({'type':'tool_use','name':'shell','input':{'command':'inspect current state'}})+'\n'+
         json.dumps({'type':'result','usage':{'input_tokens':3,'output_tokens':2}})+'\n')
+    usage_dir=run/'agent'/'skill_evolution';usage_dir.mkdir(parents=True)
+    atomic_json(usage_dir/'skill_usage.json',{'injections':[{'role':'executor','skills':['executor/cli/inspect-before-retry'],
+        'versions':[1],'trajectory_path':str(trajectory_dir/'task_raw_trajectory.txt'),'trajectory_status':'done'}]})
     (run/'result.json').write_text(json.dumps({'task_name':'task-a','verifier_result':{'rewards':{'reward':1}}}))
     b=extract_run(run,task_id='task-a',dataset='fixture-v1')
     assert b['outcome']=='success' and b['runtime']['role_tokens']['executor']['status']=='reported'
@@ -339,6 +348,10 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     assert len(b['evidence'])==5 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
     assert b['evidence']['trajectory:executor:0']['role']=='executor'
     assert 'inspect current state' in b['evidence']['trajectory:executor:0']['text']
+    injection=b['skill_usage'][0]['injections'][0]
+    assert injection['trajectory_reference']=='trajectory:executor:injection:0:0'
+    assert injection['trajectory_reference'] in b['evidence']
+    assert 'inspect current state' in b['evidence'][injection['trajectory_reference']]['text']
     with pytest.raises(ValueError,match='task ID'):extract_run(run,task_id='false-alias',dataset='fixture-v1')
 
 
