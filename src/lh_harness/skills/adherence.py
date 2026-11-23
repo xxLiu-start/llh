@@ -71,6 +71,9 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         partial_refs = [ref for ref in own_refs if ref.startswith("partial:")]
         complete_refs = [ref for ref in own_refs if ref.startswith("trajectory:")]
         own_refs = partial_refs + complete_refs
+        if not own_refs:
+            unavailable.append({"key": skill.key, "version": skill.version, "reason": "missing role trajectory evidence"})
+            continue
         if len(own_refs) < record["role_call_count"]:
             unavailable.append({"key": skill.key, "version": skill.version,
                                 "reason": "role trajectory evidence does not cover every injection call"})
