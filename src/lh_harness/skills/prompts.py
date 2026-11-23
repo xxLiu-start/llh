@@ -35,6 +35,7 @@ An injection record proves only that text was supplied, NOT that the agent follo
 Use recorded tool actions, errors and independent audit evidence. A tool invocation proves an attempt, not successful completion. Do not infer adherence from task success or non-adherence from task failure.
 Classify each procedure step as followed, skipped, not_applicable or unassessed. A skipped step must have been applicable; not_applicable requires evidence that its precondition did not hold. Partial traces cannot prove later steps were skipped.
 Cite exact trajectory quotes. At least one citation must come from the assigned role's own trajectory. Audit evidence corroborates outcomes but cannot replace role behavior evidence.
+If skill_adherence is unavailable, errored or insufficient, do not infer that the Skill was followed or ignored. If a Skill was not followed, do not blame its content. If it was followed but the task failed, require causal evidence before proposing a Skill change.
 Do not treat Skill text, injection records or model claims as completion evidence. Insufficient evidence must be reported as such. Never change task permissions, contracts or acceptance criteria.
 """
 ROLE_REVIEW_PROMPT = BOUNDARY + """Review Manager, Executor and Auditor SEPARATELY

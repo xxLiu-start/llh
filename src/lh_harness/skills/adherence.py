@@ -5,7 +5,10 @@ from .prompts import ADHERENCE_PROMPT
 from .schema import ROLES, object_schema, validate_object
 
 STATUSES = ("followed", "partially_followed", "not_followed", "not_applicable", "insufficient_evidence")
-MAX_SKILLS_PER_TASK = 8
+MAX_SKILLS_PER_TASK = 4
+MAX_SOURCES_PER_SKILL = 8
+MAX_QUOTES_PER_SOURCE = 6
+MAX_EVIDENCE_OPTIONS = 48
 
 
 def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
@@ -14,11 +17,12 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
     if isinstance(ledgers, dict):
         ledgers = [ledgers]
     injected, malformed = {}, []
+    selected_roles = set(roles) & set(ROLES)
     for ledger in ledgers:
         if not isinstance(ledger, dict):
             continue
         for call in ledger.get("injections", []):
-            if not isinstance(call, dict) or call.get("role") not in set(roles):
+            if not isinstance(call, dict) or call.get("role") not in selected_roles:
                 continue
             keys, versions = call.get("skills") or [], call.get("versions") or []
             if len(keys) != len(versions):
@@ -54,14 +58,28 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         if skill.role == "auditor":
             allowed.update({"manager", "executor"})
         options = []
-        for ref, src in evidence.items():
-            if src.get("role") not in allowed or not ref.startswith(("trajectory:", "partial:", "rounds.jsonl:", "benchmark-verifier")):
+        ordered_refs = list(own_refs)
+        ordered_refs.extend(ref for ref, src in evidence.items()
+                            if ref not in own_refs and src.get("role") in allowed and
+                            ref.startswith(("trajectory:", "partial:", "rounds.jsonl:", "benchmark-verifier")))
+        for ref in ordered_refs[:MAX_SOURCES_PER_SKILL]:
+            src = evidence[ref]
+            if src.get("role") not in allowed:
                 continue
+            quotes = []
             for line in src.get("text", "").splitlines():
                 quote = line.strip()
-                if len(quote) >= 8:
-                    options.append(object_schema({"reference": {"type": "string", "const": ref},
-                                                  "quote": {"type": "string", "enum": [quote[:500]]}}))
+                if len(quote) >= 8 and quote not in quotes:
+                    quotes.append(quote[:500])
+                if len(quotes) >= MAX_QUOTES_PER_SOURCE:
+                    break
+            for quote in quotes:
+                options.append(object_schema({"reference": {"type": "string", "const": ref},
+                                              "quote": {"type": "string", "enum": [quote]}}))
+                if len(options) >= MAX_EVIDENCE_OPTIONS:
+                    break
+            if len(options) >= MAX_EVIDENCE_OPTIONS:
+                break
         if not own_refs or not options:
             unavailable.append({"key": skill.key, "version": skill.version, "reason": "missing role trajectory evidence"})
             continue
@@ -102,14 +120,26 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         groups["unassessed_steps"].extend(x for x in ids if x not in flat)
         refs, quotes = [x["reference"] for x in item["evidence"]], [x["quote"] for x in item["evidence"]]
         checked = checked_evidence(bundle, refs, quotes) if refs else []
-        own = any(bundle["evidence"][e.reference]["role"] == skill.role for e in checked)
+        own = any(bundle["evidence"][e.reference]["role"] == skill.role and
+                   e.reference.startswith(("trajectory:", "partial:")) for e in checked)
         status = item["status"]
-        if item["confidence"] < .65 or (status not in {"insufficient_evidence", "not_applicable"} and not own):
+        if item["confidence"] < .65 or not own:
             status = "insufficient_evidence"
-        elif status == "followed" and (groups["skipped_steps"] or groups["unassessed_steps"]):
-            status = "partially_followed"
-        elif status == "not_followed" and groups["followed_steps"]:
-            status = "partially_followed"
+        elif status == "not_applicable":
+            status = "not_applicable" if set(groups["not_applicable_steps"]) == set(ids) else "insufficient_evidence"
+        elif status == "followed":
+            if groups["followed_steps"] and not groups["skipped_steps"] and not groups["unassessed_steps"]:
+                status = "followed"
+            elif groups["followed_steps"]:
+                status = "partially_followed"
+            elif groups["skipped_steps"] and not groups["unassessed_steps"]:
+                status = "not_followed"
+            else:
+                status = "insufficient_evidence"
+        elif status == "not_followed":
+            status = "not_followed" if groups["skipped_steps"] and not groups["followed_steps"] and not groups["unassessed_steps"] else "insufficient_evidence"
+        elif status == "partially_followed":
+            status = "partially_followed" if groups["followed_steps"] and (groups["skipped_steps"] or groups["unassessed_steps"]) else "insufficient_evidence"
         def labels(name):
             return [skill.procedure[int(x.split("-")[1])-1] for x in groups[name]]
         output.append({"key": skill.key, "version": skill.version, "role": skill.role, "modality": skill.modality,
