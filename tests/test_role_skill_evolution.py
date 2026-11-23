@@ -328,10 +328,16 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     run=tmp_path/'run';(run/'role_orchestration').mkdir(parents=True)
     audit='Status: complete\nIntegrity: clean\nContract audit: aligned\nAudit facts: inspected the actual output.\nBlocking constraints: none\n'
     ledger=run/'role_orchestration/rounds.jsonl';ledger.write_text(json.dumps({'round_index':1,'plan_text':'Inspect a Python assertion','executor_output':'Execution completed','auditor_report':audit})+'\n')
+    trajectory_dir=run/'role_orchestration/rounds/round_001';trajectory_dir.mkdir(parents=True)
+    (trajectory_dir/'task_raw_trajectory.txt').write_text(
+        json.dumps({'type':'tool_use','name':'shell','input':{'command':'inspect current state'}})+'\n'+
+        json.dumps({'type':'result','usage':{'input_tokens':3,'output_tokens':2}})+'\n')
     (run/'result.json').write_text(json.dumps({'task_name':'task-a','verifier_result':{'rewards':{'reward':1}}}))
     b=extract_run(run,task_id='task-a',dataset='fixture-v1')
     assert b['outcome']=='success' and b['runtime']['role_tokens']['executor']['status']=='unavailable'
-    assert len(b['evidence'])==4 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
+    assert len(b['evidence'])==5 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
+    assert b['evidence']['trajectory:executor:0']['role']=='executor'
+    assert 'inspect current state' in b['evidence']['trajectory:executor:0']['text']
     with pytest.raises(ValueError,match='task ID'):extract_run(run,task_id='false-alias',dataset='fixture-v1')
 
 
