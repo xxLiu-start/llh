@@ -173,7 +173,9 @@ def test_partial_negative_lesson_is_independently_proposed_then_curated(tmp_path
     assert doc['errors']==[] and len(doc['proposals'])==1 and lib.digest()==before
     assert all(stage!='curator' for stage,_ in model.calls)
     report=curate_proposals([doc],cfg,lib,model,fixtures.split('task-a'),flush=True)
-    assert report['errors']==[] and len(lib.list('manager'))==1
+    assert report['errors']==[] and lib.list('manager')==[]
+    candidates=lib.list('manager',candidates=True)
+    assert len(candidates)==1 and candidates[0].status=='candidate' and candidates[0].support==1
     assert model.context['signal']=='negative' and model.context['repair_validation']=='not_validated'
 
 

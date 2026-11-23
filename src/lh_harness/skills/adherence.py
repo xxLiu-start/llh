@@ -100,7 +100,8 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             "skipped_steps": steps, "not_applicable_steps": steps, "unassessed_steps": steps,
             "evidence": ev, "reason": {"type": "string", "maxLength": 600}, "confidence": {"type": "number"}}))
     if not inputs:
-        return {"status": "insufficient_evidence", "assessments": [], "injected_skill_count": len(injected),
+        status = "unavailable" if not loaded and unavailable else "insufficient_evidence"
+        return {"status": status, "assessments": [], "injected_skill_count": len(injected),
                 "unavailable_skills": unavailable, "malformed_injections": malformed, "deferred_skills": deferred, "model_calls": 0}
     schema = object_schema({"assessments": {"type": "array", "minItems": len(schemas), "maxItems": len(schemas), "items": {"anyOf": schemas}}})
     result = validate_object(model("adherence", "shared", ADHERENCE_PROMPT, {"skills": inputs}, schema), schema)

@@ -140,8 +140,11 @@ def test_one_task_role_proposer_error_preserves_other_task_proposals(tmp_path):
     docs = [prepare_proposals([fixtures.bundle(task)], cfg, lib, flaky, splits) for task in ('task-a','task-b')]
     report = curate_proposals(docs, cfg, lib, model, splits, flush=True)
     assert report['status'] == 'completed_with_errors' and len(report['errors']) == 1
-    assert lib.list() == []
-    assert {s.role for s in lib.list(candidates=True)} == set(ROLES)
+    active=lib.list()
+    candidates=lib.list(candidates=True)
+    assert {s.role for s in active} == {'manager','auditor'}
+    assert all(s.support==2 and s.status=='active' for s in active)
+    assert {s.role for s in candidates} == {'executor'}
     assert lib.list('executor',candidates=True)[0].support == 1
 
 

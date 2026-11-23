@@ -1,0 +1,2 @@
+# Sourced by the unmodified Terminal-Bench verifier test script.
+export PATH="/opt/lhh-verifier-uv:$PATH"

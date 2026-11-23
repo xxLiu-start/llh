@@ -168,11 +168,11 @@ def test_each_task_is_graded_then_learned_before_next_and_reuses_only_past_skill
     code, manifest = execute(p, runtime)
     assert code == 0
     assert runtime.events == [(stage, task) for task in ["a", "b", "c"] for stage in ["execute", "graded", "reflect", "learn"]]
-    assert runtime.used == [("a", []), ("b", ["cancel-pending-work"]), ("c", ["cancel-pending-work"])]
+    assert runtime.used == [("a", []), ("b", []), ("c", ["cancel-pending-work"])]
     rows = manifest["tasks"]
     assert rows[0]["library_after"] == rows[1]["library_before"]
     assert rows[1]["library_after"] == rows[2]["library_before"]
-    assert rows[0]["library_after"]["active_skills"] == 1
+    assert rows[0]["library_after"]["active_skills"] == 0
     assert rows[1]["library_after"]["active_skills"] == 1
     source = json.loads((p["output"] / "library/online_provenance.json").read_text())
     assert source["observed_task_ids"] == ["a", "b", "c"]

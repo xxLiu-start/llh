@@ -40,4 +40,6 @@ jobs:
           python -m pip install -e '.[test]'
 
       - name: Run complete pytest suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}/eval/TB-harness/Harness/src
         run: python -m pytest -q
