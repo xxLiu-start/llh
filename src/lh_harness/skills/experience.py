@@ -198,6 +198,10 @@ def extract_run(root, *, task_id, dataset, split="train"):
     skill_usage = [json.loads(path.read_text()) for path in root.rglob("skill_usage.json")]
     for ledger_index, usage_ledger in enumerate(skill_usage):
         for call_index, call in enumerate(usage_ledger.get("injections", [])):
+            # Only this extractor may create a trajectory reference. Never
+            # trust a reference copied into the raw usage ledger.
+            call.pop("trajectory_reference", None)
+            call.pop("trajectory_completeness", None)
             role = call.get("role")
             raw_path = call.get("trajectory_path")
             if role not in aliases or not isinstance(raw_path, str) or not raw_path:
