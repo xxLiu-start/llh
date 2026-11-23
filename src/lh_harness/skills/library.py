@@ -78,7 +78,7 @@ class SkillLibrary:
             raise ValueError("skill history identity mismatch")
         return skill
 
-    def put(self, skill: Skill, *, min_support=1):
+    def put(self, skill: Skill, *, min_support=2):
         if type(min_support) is not int or min_support < 1:
             raise ValueError("minimum task support must be a positive integer")
         with self.lock():

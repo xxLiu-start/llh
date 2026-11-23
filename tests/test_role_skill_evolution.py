@@ -36,6 +36,8 @@ def test_library_candidate_promotion_versions_rollback_and_freeze(tmp_path):
     lib=SkillLibrary(tmp_path)
     one=lib.put(skill(tasks=("task-a",)),min_support=2)
     assert one.status=="candidate" and not lib.list()
+    single=skill(name="single-support",tasks=("task-a",));single.status="active"
+    assert lib.put(single).status=="candidate"
     two=lib.put(skill())
     assert two.version==2 and two.status=="active"
     restored=lib.rollback(two.key,1)
