@@ -155,7 +155,7 @@ def test_only_usage_injects_and_original_adapter_protocol_is_unchanged(tmp_path)
     session=SkillSession(cfg,tmp_path/'run',counter=lambda text:len(text.split()))
     stream=tmp_path/'run'/'episodes'/'ep001'/'claude_stream.jsonl'
     stream.parent.mkdir(parents=True)
-    stream.write_text(json.dumps({'type':'assistant','content':[{'type':'tool_use','name':'Bash','input':{'command':'inspect state'}}]})+'\\n')
+    stream.write_text(json.dumps({'type':'assistant','content':[{'type':'tool_use','name':'Bash','input':{'command':'inspect state'}}]})+'\n')
     class Adapter:
         sentinel='original permissions'
         async def run_episode(self,prompt,*args,**kwargs):
