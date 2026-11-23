@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from lh_harness.skills.integration import SkillSession
 from lh_harness.skills.library import SkillLibrary
 from lh_harness.skills.schema import Evidence, Skill
@@ -45,6 +47,7 @@ class NativeStreamingAdapter:
         return SimpleNamespace(status="done", actions_log=path.read_text(), metadata={}, duration_ms=10)
 
 
+@pytest.mark.asyncio
 async def test_skill_session_persists_native_live_trajectory_link(tmp_path):
     library_root = tmp_path / "library"
     library = SkillLibrary(library_root)
@@ -70,3 +73,37 @@ async def test_skill_session_persists_native_live_trajectory_link(tmp_path):
     assert injection["skills"] == [_active_skill().key]
     assert injection["trajectory_path"] == str(trajectory.resolve())
     assert injection["trajectory_status"] == "done"
+
+
+
+class FailingNativeStreamingAdapter(NativeStreamingAdapter):
+    async def run_episode(self, prompt, env, budget, *, live_trajectory_path=None):
+        await super().run_episode(prompt, env, budget, live_trajectory_path=live_trajectory_path)
+        raise RuntimeError("simulated episode failure after partial output")
+
+
+@pytest.mark.asyncio
+async def test_skill_session_persists_inflight_trace_when_adapter_raises(tmp_path):
+    library_root = tmp_path / "library"
+    library = SkillLibrary(library_root)
+    library.put(_active_skill())
+    settings = {
+        "enabled": True,
+        "library_dir": str(library_root),
+        "phase": "online",
+        "training": {"enabled": False, "train_roles": []},
+        "usage": {"enabled": True, "use_roles": ["executor"]},
+    }
+    session = SkillSession(settings, tmp_path / "run")
+    wrapped = session.wrap("cli_executor", FailingNativeStreamingAdapter())
+    trajectory = tmp_path / "run" / "role_orchestration" / "round_001" / "executor_raw_trajectory.jsonl"
+
+    with pytest.raises(RuntimeError, match="simulated episode failure"):
+        await wrapped.run_episode("inspect the failure and retry", object(), object(),
+                                  live_trajectory_path=str(trajectory))
+
+    ledger = json.loads((tmp_path / "run" / "skill_usage.json").read_text())
+    injection = next(item for item in ledger["injections"] if item["skills"])
+    assert injection["trajectory_path"] == str(trajectory.resolve())
+    assert injection["trajectory_status"] == "error"
+    assert trajectory.is_file()

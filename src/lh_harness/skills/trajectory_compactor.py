@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import Counter
@@ -23,29 +22,29 @@ def compact(path, *, max_events=64):
     tools, results, errors, actions, tails = [], [], [], Counter(), []
     malformed = 0
 
-    def visible_result(value):
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            return "\n".join(text for item in value if (text := visible_result(item)))
-        if isinstance(value, dict):
-            if value.get("type") == "image":
-                return "[image omitted]"
-            text = value.get("text")
-            if isinstance(text, str):
-                return text
-        return ""
-
     seen_tool_ids = set()
     with path.open(errors="replace") as source:
         for index, line in enumerate(source, 1):
             try:
-                json.loads(line)
+                event = json.loads(line)
             except ValueError:
                 malformed += 1
                 if re.search(r"error|timeout|failed|exception", line, re.I):
                     errors.append({"line": index, "detail": redact(line[:1000])})
                 continue
+
+            def collect_errors(value):
+                if isinstance(value, dict):
+                    if value.get("is_error") or value.get("error") or value.get("status") in {"error", "timeout", "failed"}:
+                        errors.append({"line": index, "detail": redact(json.dumps(value, ensure_ascii=False)[:1500])})
+                    for key, item in value.items():
+                        if key not in {"data", "image", "image_url", "screenshot", "base64"}:
+                            collect_errors(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        collect_errors(item)
+
+            collect_errors(event)
             # Reuse the harness's provider-neutral parser so Claude, Codex
             # (including MCP GUI/file-change calls), OpenCode and DeepSeek
             # episodes all produce the same bounded evidence shape.
@@ -69,13 +68,9 @@ def compact(path, *, max_events=64):
                     if detail:
                         results.append({"line": index, "tool_use_id": str(step.get("tool_use_id", "")),
                                         "detail": detail})
-                    if step.get("is_error") or step.get("status") in {"error", "timeout", "failed"}:
-                        errors.append({"line": index, "detail": detail or "tool reported an error"})
                 elif kind == "result":
                     detail = redact(str(step.get("text") or "")[:1000])
                     tails.append({"line": index, "type": "result", "detail": detail})
-                    if step.get("is_error"):
-                        errors.append({"line": index, "detail": detail or "agent reported an error"})
     # Error excerpts are not dropped by ordinary event sampling. Their full
     # source digest permits checking causes outside the compressed envelope.
     return {"tool_calls": tools[:max_events // 2] + tools[max(max_events // 2, len(tools) - max_events // 2):],
