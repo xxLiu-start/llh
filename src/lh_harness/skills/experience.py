@@ -66,8 +66,8 @@ def extract_run(root, *, task_id, dataset, split="train"):
                 summary["evidence_reference"] = evidence_reference
                 summary["source_sha256"] = source_digest
                 summaries.append({"reference": relative_source, **summary})
-                observed = [f"line {x['line']} {x.get('tool', x.get('type', 'event'))}: {x.get('input', x.get('detail', ''))}"
-                            for x in [*summary["tool_calls"], *summary["errors"], *summary["final_events"]]]
+                observed = [f"line {x['line']} {x.get('tool', x.get('tool_use_id', x.get('type', 'event')))}: {x.get('input', x.get('detail', ''))}"
+                            for x in [*summary["tool_calls"], *summary.get("tool_results", []), *summary["errors"], *summary["final_events"]]]
                 if observed:
                     refs[evidence_reference] = {"role": role, "text": redact("\n".join(observed)),
                         "source_sha256": source_digest, "source_path": relative_source, "kind": "trajectory"}
@@ -228,8 +228,8 @@ def extract_run(root, *, task_id, dataset, split="train"):
             if not trajectory_path.is_file():
                 continue
             summary = compact(trajectory_path)
-            observed = [f"line {item['line']} {item.get('tool', item.get('type', 'event'))}: {item.get('input', item.get('detail', ''))}"
-                        for item in [*summary["tool_calls"], *summary["errors"], *summary["final_events"]]]
+            observed = [f"line {item['line']} {item.get('tool', item.get('tool_use_id', item.get('type', 'event')))}: {item.get('input', item.get('detail', ''))}"
+                        for item in [*summary["tool_calls"], *summary.get("tool_results", []), *summary["errors"], *summary["final_events"]]]
             if not observed:
                 continue
             source_digest = hashlib.sha256(trajectory_path.read_bytes()).hexdigest()
