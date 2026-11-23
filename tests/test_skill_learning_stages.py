@@ -144,7 +144,8 @@ def test_one_task_role_proposer_error_preserves_other_task_proposals(tmp_path):
     candidates=lib.list(candidates=True)
     assert {s.role for s in active} == {'manager','auditor'}
     assert all(s.support==2 and s.status=='active' for s in active)
-    assert {s.role for s in candidates} == {'executor'}
+    assert {s.role for s in candidates if s.status=='active'} == {'manager','auditor'}
+    assert {s.role for s in candidates if s.status=='candidate'} == {'executor'}
     assert lib.list('executor',candidates=True)[0].support == 1
 
 
