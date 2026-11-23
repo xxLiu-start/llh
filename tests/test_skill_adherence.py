@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from lh_harness.skills.adherence import analyze_injected_skills
 from lh_harness.skills.library import SkillLibrary
 from lh_harness.skills.schema import Evidence, Skill
@@ -278,3 +280,10 @@ def test_adherence_usage_is_included_in_offline_learning_cost():
     assert report["categories"]["adherence"]["total_tokens"] == 18
     assert report["offline_learning"]["total_tokens"] == 18
     assert report["runtime"]["total_tokens"] == 0
+
+
+
+def test_historical_skill_lookup_rejects_invalid_names(tmp_path):
+    library = SkillLibrary(tmp_path / "library")
+    with pytest.raises(ValueError, match="invalid skill key"):
+        library.get_version("executor/cli/..", 1)

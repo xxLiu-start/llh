@@ -8,9 +8,17 @@ from ..agent_logs import parse_trajectory
 
 
 def redact(text):
-    text = re.sub(r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?bearer\s+)\S+", r"\1[REDACTED]", text)
-    text = re.sub(r"(?i)((?:api[_-]?key|password|secret|authorization|access_token)\s*[=:]\s*)[^\s,}\"]+", r"\1[REDACTED]", text)
-    return re.sub(r"\bsk-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", text)
+    text = str(text)
+    text = re.sub(r'(?i)(["\']?authorization["\']?\s*[:=]\s*["\']?bearer\s+)[^"\'\s,}]+',
+                  r"\1[REDACTED]", text)
+    sensitive_key = r'(?i)(["\']?(?:api[_-]?key|password|secret|authorization|access[_-]?token|refresh[_-]?token)["\']?\s*[:=]\s*)'
+    text = re.sub(sensitive_key + r'"(?:\\.|[^"\\])*"', r'\1"[REDACTED]"', text)
+    text = re.sub(sensitive_key + r"'(?:\\.|[^'\\])*'", r"\1'[REDACTED]'", text)
+    text = re.sub(sensitive_key + r'[^"\'\s,}\]]+', r"\1[REDACTED]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", text)
+    text = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16})\b",
+                  "[REDACTED]", text)
+    return text
 
 
 def compact(path, *, max_events=64):

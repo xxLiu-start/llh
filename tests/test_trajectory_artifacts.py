@@ -203,3 +203,20 @@ def test_compactor_extracts_opencode_tool_results(tmp_path: Path) -> None:
     assert summary["tool_call_count"] == 1
     assert summary["tool_calls"][0]["tool"] == "computer_click"
     assert "Click completed" in summary["tool_results"][0]["detail"]
+
+
+
+def test_trajectory_redaction_handles_json_credentials_and_common_tokens() -> None:
+    from lh_harness.skills.trajectory_compactor import redact
+
+    source = ('{"api_key":"api-secret-value","password":"two word password",'
+              '"access_token":"oauth-secret-value","authorization":"Bearer bearer-secret",'
+              '"github":"ghp_abcdefghijklmnopqrstuvwxyz1234567890",'
+              '"aws":"AKIA1234567890ABCDEF","safe":"ordinary"}')
+    result = redact(source)
+
+    for secret in ("api-secret-value", "two word password", "oauth-secret-value",
+                   "bearer-secret", "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+                   "AKIA1234567890ABCDEF"):
+        assert secret not in result
+    assert "ordinary" in result
