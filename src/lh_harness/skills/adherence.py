@@ -104,6 +104,9 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         if not own_refs or not options:
             unavailable.append({"key": skill.key, "version": skill.version, "reason": "missing role trajectory evidence"})
             continue
+        complete_own_trace = any(ref.startswith("trajectory:") for ref in own_refs)
+        partial_role_round = any(skill.role in row.get("roles", {}) for row in bundle.get("partial_rounds", []))
+        partial_execution = bool(partial_refs or partial_role_round or not complete_own_trace)
         inputs.append({"key": skill.key, "version": str(skill.version), "role": skill.role, "modality": skill.modality,
             "injection_count": record["count"], "description": skill.description, "trigger": skill.trigger,
             "preconditions": skill.preconditions,
@@ -111,7 +114,7 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             "verification": skill.verification, "pitfalls": skill.pitfalls, "generalization": skill.generalization,
             "trajectory_evidence": [{"reference": ref, "text": evidence[ref]["text"][:6000]} for ref in own_refs[:6]],
             "outcome": bundle.get("outcome"), "agent_timeout": bundle.get("runtime", {}).get("agent_timeout", False),
-            "partial_execution": bool(bundle.get("runtime", {}).get("agent_timeout") or bundle.get("partial_rounds"))})
+            "partial_execution": partial_execution})
         ids = [f"step-{i+1}" for i in range(len(skill.procedure))]
         steps = {"type": "array", "maxItems": len(ids), "items": {"type": "string", "enum": ids}}
         empty = {"type": "array", "maxItems": 0, "items": {"type": "string"}}
