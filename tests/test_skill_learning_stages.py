@@ -106,12 +106,13 @@ def test_task_reflection_ignores_batch_gate_but_partial_curation_requires_flush(
     queued = curate_proposals([doc], cfg, lib, model, splits)
     assert queued['status'] == 'queued' and lib.digest() == before and len(model.calls) == calls
     report = curate_proposals([doc], cfg, lib, model, splits, flush=True)
-    assert not report['errors'] and len(lib.list()) == 1
-    assert lib.list()[0].support == 1
+    assert not report['errors'] and lib.list() == []
+    assert len(lib.list(candidates=True)) == 1
+    assert lib.list(candidates=True)[0].support == 1
 
 
 @pytest.mark.parametrize('role', ROLES)
-def test_single_task_proposal_only_activates_after_batch_curator_acceptance(tmp_path, role):
+def test_single_task_proposal_remains_candidate_after_batch_curator_acceptance(tmp_path, role):
     from lh_harness.skills.router import SkillRouter
     lib, model = SkillLibrary(tmp_path/'library'), Model()
     lib.create()
@@ -121,9 +122,11 @@ def test_single_task_proposal_only_activates_after_batch_curator_acceptance(tmp_
     assert len(doc['proposals']) == 1 and not lib.list(candidates=True)
     assert SkillRouter(lib, cfg).select(role, 'cli', 'python test')[0] == []
     report = curate_proposals([doc], cfg, lib, model, splits, flush=True)
-    assert report['errors'] == [] and lib.list(role)[0].support == 1
+    assert report['errors'] == [] and lib.list(role) == []
+    candidate=lib.list(role,candidates=True)[0]
+    assert candidate.support == 1 and candidate.status == 'candidate'
     selected, text, count = SkillRouter(lib, cfg).select(role, 'cli', 'python test')
-    assert len(selected) == 1 and selected[0].status == 'active' and text and count is None
+    assert selected == [] and text == '' and count is None
 
 
 def test_one_task_role_proposer_error_preserves_other_task_proposals(tmp_path):
@@ -137,8 +140,9 @@ def test_one_task_role_proposer_error_preserves_other_task_proposals(tmp_path):
     docs = [prepare_proposals([fixtures.bundle(task)], cfg, lib, flaky, splits) for task in ('task-a','task-b')]
     report = curate_proposals(docs, cfg, lib, model, splits, flush=True)
     assert report['status'] == 'completed_with_errors' and len(report['errors']) == 1
-    assert {s.role for s in lib.list()} == set(ROLES)
-    assert lib.list('executor')[0].support == 1
+    assert lib.list() == []
+    assert {s.role for s in lib.list(candidates=True)} == set(ROLES)
+    assert lib.list('executor',candidates=True)[0].support == 1
 
 
 def test_cli_runs_task_reflection_then_batch_curation_without_rereading_runs(tmp_path, monkeypatch):

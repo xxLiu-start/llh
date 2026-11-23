@@ -251,10 +251,29 @@ def test_curator_accepts_single_task_skill_and_reject_defer_remain_unavailable(t
     result=curate(skill(tasks=('task-a',)),lib,model)
     assert result['changed']==(action=='ACCEPT')
     if action=='ACCEPT':
-        assert lib.list()[0].status=='active' and lib.list()[0].support==1
+        assert lib.list()==[]
+        candidate=lib.list(candidates=True)[0]
+        assert candidate.status=='candidate' and candidate.support==1
         chosen, _, _ = SkillRouter(lib,settings(ROLES)).select('executor','cli','python test')
-        assert len(chosen)==1
+        assert chosen==[]
     else:assert lib.list(candidates=True)==[]
+
+
+def test_second_independent_task_promotes_candidate_to_active(tmp_path):
+    lib=SkillLibrary(tmp_path);model=Model(curation='ACCEPT')
+    first=curate(skill(tasks=('task-a',)),lib,model)
+    assert first['status']=='candidate' and lib.list()==[]
+    second=curate(skill(tasks=('task-b',)),lib,model)
+    assert second['status']=='active' and second['support']==2
+    assert len(lib.list())==1 and lib.list()[0].support==2
+
+
+def test_repeated_run_of_same_task_does_not_promote_candidate(tmp_path):
+    lib=SkillLibrary(tmp_path);model=Model(curation='ACCEPT')
+    curate(skill(tasks=('task-a',)),lib,model)
+    second=curate(skill(tasks=('task-a',)),lib,model)
+    assert second['status']=='candidate' and second['support']==1
+    assert lib.list()==[] and len(lib.list(candidates=True))==1
 
 
 def test_merge_preserves_procedures_and_forbids_cross_role_or_modality():
@@ -340,7 +359,7 @@ def test_default_skill_configuration_uses_offline_library_not_legacy_task_traini
     value=validate_skills({'enabled':True,'training':{'enabled':True,'train_roles':['executor']},
                            'usage':{'enabled':True,'use_roles':['manager','executor','auditor']}})
     assert 'library_dir' in value and 'bank' not in value
-    assert value['training']['min_independent_tasks']==1
+    assert value['training']['min_independent_tasks']==2
 
 
 def test_disabled_skills_do_not_construct_or_call_the_router(tmp_path,monkeypatch):

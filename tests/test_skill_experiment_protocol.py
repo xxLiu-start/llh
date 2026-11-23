@@ -37,7 +37,7 @@ def test_all_experiment_templates_have_unlimited_skill_injection():
         assert settings.max_per_role is None, path
         assert settings.router['max_skills_per_role'] is None, path
         assert all(settings.budget(role) is None for role in ROLES), path
-        assert settings.training['min_independent_tasks'] == 1, path
+        assert settings.training['min_independent_tasks'] == 2, path
 
 
 def test_model_and_verifier_parity_changes_are_rejected():

@@ -55,7 +55,7 @@ def test_all_role_combinations_use_online_phase_and_same_inference(fixture, role
     assert p["config"]["local_model"] == original["local_model"]
     assert p["settings"].phase == "online"
     assert p["settings"].training["batch_size"] == 1
-    assert p["settings"].training["min_independent_tasks"] == 1
+    assert p["settings"].training["min_independent_tasks"] == 2
     assert set(p["settings"].training["train_roles"]) == set(p["roles"])
     assert p["settings"].max_per_role is None
     assert p["settings"].router["max_skills_per_role"] is None
