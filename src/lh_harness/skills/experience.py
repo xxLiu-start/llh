@@ -212,6 +212,10 @@ def extract_run(root, *, task_id, dataset, split="train"):
             call.pop("trajectory_completeness", None)
             trajectory_status = call.pop("trajectory_status", None)
             raw_path = call.pop("trajectory_path", None)
+            # Episodes with no injected Skill need no second trajectory
+            # compaction pass; the ordinary role trajectory is already saved.
+            if not call.get("skills"):
+                continue
             role = call.get("role")
             if role not in aliases or not isinstance(raw_path, str) or not raw_path:
                 continue

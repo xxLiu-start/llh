@@ -341,8 +341,11 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
         json.dumps({'type':'tool_use','name':'shell','input':{'command':'inspect current state'}})+'\n'+
         json.dumps({'type':'result','usage':{'input_tokens':3,'output_tokens':2}})+'\n')
     usage_dir=run/'agent'/'skill_evolution';usage_dir.mkdir(parents=True)
-    (usage_dir/'skill_usage.json').write_text(json.dumps({'injections':[{'role':'executor','skills':['executor/cli/inspect-before-retry'],
-        'versions':[1],'trajectory_path':str(trajectory_dir/'task_raw_trajectory.txt'),'trajectory_status':'done'}]}))
+    (usage_dir/'skill_usage.json').write_text(json.dumps({'injections':[
+        {'role':'executor','skills':['executor/cli/inspect-before-retry'],
+         'versions':[1],'trajectory_path':str(trajectory_dir/'task_raw_trajectory.txt'),'trajectory_status':'done'},
+        {'role':'executor','skills':[],'versions':[],
+         'trajectory_path':str(trajectory_dir/'task_raw_trajectory.txt'),'trajectory_status':'done'}]}))
     (run/'result.json').write_text(json.dumps({'task_name':'task-a','verifier_result':{'rewards':{'reward':1}}}))
     b=extract_run(run,task_id='task-a',dataset='fixture-v1')
     assert b['outcome']=='success' and b['runtime']['role_tokens']['executor']['status']=='reported'
@@ -354,6 +357,9 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     assert injection['trajectory_reference']=='trajectory:executor:injection:0:0'
     assert 'trajectory_path' not in injection and 'trajectory_status' not in injection
     assert injection['trajectory_reference'] in b['evidence']
+    empty_call=b['skill_usage'][0]['injections'][1]
+    assert 'trajectory_reference' not in empty_call
+    assert 'trajectory_path' not in empty_call and 'trajectory_status' not in empty_call
     assert 'inspect current state' in b['evidence'][injection['trajectory_reference']]['text']
     with pytest.raises(ValueError,match='task ID'):extract_run(run,task_id='false-alias',dataset='fixture-v1')
 
