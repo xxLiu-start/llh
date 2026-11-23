@@ -118,6 +118,13 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         if len(flat) != len(set(flat)) or set(flat) - set(ids):
             raise ValueError("overlapping or unknown adherence step IDs")
         groups["unassessed_steps"].extend(x for x in ids if x not in flat)
+        # Missing steps in an interrupted/partial-only trace are unknown, not
+        # evidence that the agent skipped them.
+        complete_own_trace = any(ref.startswith("trajectory:") for ref in own_refs)
+        partial_execution = bool(bundle.get("runtime", {}).get("agent_timeout")) or not complete_own_trace
+        if partial_execution:
+            groups["unassessed_steps"].extend(groups["skipped_steps"])
+            groups["skipped_steps"] = []
         refs, quotes = [x["reference"] for x in item["evidence"]], [x["quote"] for x in item["evidence"]]
         checked = checked_evidence(bundle, refs, quotes) if refs else []
         own = any(bundle["evidence"][e.reference]["role"] == skill.role and

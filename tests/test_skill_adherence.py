@@ -3,6 +3,8 @@ from __future__ import annotations
 from lh_harness.skills.adherence import analyze_injected_skills
 from lh_harness.skills.library import SkillLibrary
 from lh_harness.skills.schema import Evidence, Skill
+from lh_harness.skills.statistics import summarize
+from lh_harness.token_usage import normalize
 
 
 def make_skill():
@@ -139,10 +141,13 @@ def test_partial_timeout_trace_is_never_reported_as_fully_followed(tmp_path):
     library = SkillLibrary(tmp_path / "library")
     skill = library.put(make_skill())
     bundle, _ = make_bundle(skill, partial=True, timeout=True)
-    model = AdherenceModel(status="insufficient_evidence")
+    model = AdherenceModel(status="not_followed")
     result = analyze_injected_skills(bundle, library, model, roles=["executor"])
 
-    assert result["assessments"][0]["status"] == "insufficient_evidence"
+    assessment = result["assessments"][0]
+    assert assessment["status"] == "insufficient_evidence"
+    assert assessment["skipped_steps"] == []
+    assert assessment["unassessed_steps"] == skill.procedure
     assert model.calls[0][2]["skills"][0]["agent_timeout"] is True
     assert "Partial traces cannot prove later steps were skipped" in model.calls[0][3]
 
@@ -157,3 +162,13 @@ def test_unknown_injected_version_is_reported_without_model_call(tmp_path):
     assert result["status"] == "unavailable"
     assert result["model_calls"] == 0
     assert result["unavailable_skills"][0]["version"] == 9
+
+
+
+def test_adherence_usage_is_included_in_offline_learning_cost():
+    usage = normalize({"input_tokens": 11, "output_tokens": 7})
+    report = summarize([{"role": "adherence", "usage": usage}])
+
+    assert report["categories"]["adherence"]["total_tokens"] == 18
+    assert report["offline_learning"]["total_tokens"] == 18
+    assert report["runtime"]["total_tokens"] == 0
