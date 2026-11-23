@@ -100,7 +100,9 @@ PROPOSER_PROMPTS = {r: BOUNDARY + "\nTarget role: " + r + ".\n" + rule +
     "For NONE explain why no transferable novelty remains (including overlap with existing skills); "
     "for DEFER name the exact missing evidence. Other content fields are empty for NONE/DEFER. "
     "Inspect skill_adherence: do not blame Skill quality when it was not followed; "
-    "consider ENHANCE only when followed steps are shown inadequate by causal evidence.\n" for r, rule in ROLE_RULES.items()}
+    "consider ENHANCE only when followed steps are shown inadequate by causal evidence. "
+    "If adherence is unavailable, errored, insufficient or deferred, treat it as unknown; "
+    "never infer that the Skill was followed or ignored.\n" for r, rule in ROLE_RULES.items()}
 CURATOR_PROMPT = BOUNDARY + """Review this role/topic proposal against existing
 skills. Return ACCEPT, MERGE, UPDATE, REJECT or DEFER, a target key and reason.
 All task Proposers have already finished independently against the same prior
@@ -117,10 +119,11 @@ once. A single-task proposal may remain a Candidate.
 Check generalization, causal role, modality, duplication, token cost and
 preservation of existing capabilities. Positive lessons require independent
 audit evidence; negative lessons may use qualified benchmark failures. proposal_context
-may include skill_adherence. If an injected Skill was not followed, do not treat
-that as proof of bad Skill content. If it was followed but the task failed, require
-causal evidence that a specific procedure/check was inadequate before UPDATE.
-Untested repairs must never be represented as successful.
+may include skill_adherence. If adherence is unavailable, errored, insufficient
+or deferred, treat it as unknown; do not infer that the Skill was followed or ignored.
+If an injected Skill was not followed, do not treat that as proof of bad Skill content.
+If it was followed but the task failed, require causal evidence that a specific
+procedure/check was inadequate before UPDATE. Untested repairs must never be represented as successful.
 Reject invented success claims and unsupported causal attribution. Partial records
 prove only the actions actually saved. No lesson may change MEA permissions or protocol.
 MERGE/UPDATE
