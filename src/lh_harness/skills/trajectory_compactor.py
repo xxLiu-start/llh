@@ -5,6 +5,8 @@ import json
 import re
 from collections import Counter
 
+from ..agent_logs import parse_trajectory
+
 
 def redact(text):
     text = re.sub(r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?bearer\s+)\S+", r"\1[REDACTED]", text)
@@ -34,42 +36,46 @@ def compact(path, *, max_events=64):
                 return text
         return ""
 
+    seen_tool_ids = set()
     with path.open(errors="replace") as source:
         for index, line in enumerate(source, 1):
             try:
-                event = json.loads(line)
+                json.loads(line)
             except ValueError:
                 malformed += 1
                 if re.search(r"error|timeout|failed|exception", line, re.I):
                     errors.append({"line": index, "detail": redact(line[:1000])})
                 continue
-            def walk(value):
-                if isinstance(value, dict):
-                    kind = value.get("type", "")
-                    if kind in {"tool_use", "function_call", "command_execution"} or "tool_calls" in value:
-                        command = value.get("input", value.get("arguments", value.get("command", "")))
-                        command = redact(json.dumps(command, ensure_ascii=False)[:1200])
-                        name = value.get("name", kind)
-                        signature = str(name) + ":" + command
-                        actions[signature] += 1
-                        tools.append({"line": index, "tool": name, "input": command})
-                    if kind in {"tool_result", "function_call_output"} or (kind == "command_execution" and "aggregated_output" in value):
-                        result_value = value.get("content", value.get("output", value.get("aggregated_output", value.get("result", ""))))
-                        detail = redact(visible_result(result_value)[:800])
-                        if detail:
-                            results.append({"line": index, "tool_use_id": str(value.get("tool_use_id", value.get("id", ""))),
-                                            "detail": detail})
-                    if value.get("is_error") or value.get("error") or value.get("status") in {"error", "timeout", "failed"}:
-                        errors.append({"line": index, "detail": redact(json.dumps(value, ensure_ascii=False)[:1500])})
-                    for key, item in value.items():
-                        if key not in {"data", "image", "image_url", "screenshot", "base64"}:
-                            walk(item)
-                elif isinstance(value, list):
-                    for item in value:
-                        walk(item)
-            walk(event)
-            if event.get("type") in {"result", "turn.completed", "error"}:
-                tails.append({"line": index, "type": event["type"], "detail": redact(str(event.get("result", event.get("error", "")))[:1000])})
+            # Reuse the harness's provider-neutral parser so Claude, Codex
+            # (including MCP GUI/file-change calls), OpenCode and DeepSeek
+            # episodes all produce the same bounded evidence shape.
+            for step in parse_trajectory(line):
+                kind = step.get("kind")
+                if kind == "tool_use":
+                    tool_id = str(step.get("id") or "")
+                    if tool_id and tool_id in seen_tool_ids:
+                        continue
+                    if tool_id:
+                        seen_tool_ids.add(tool_id)
+                    name = str(step.get("name") or "tool")
+                    command = redact(json.dumps(step.get("input", {}), ensure_ascii=False)[:1200])
+                    signature = name + ":" + command
+                    actions[signature] += 1
+                    tools.append({"line": index, "tool": name, "input": command})
+                elif kind == "tool_result":
+                    detail = redact(str(step.get("text") or "")[:800])
+                    if not detail and step.get("has_image"):
+                        detail = "[image omitted]"
+                    if detail:
+                        results.append({"line": index, "tool_use_id": str(step.get("tool_use_id", "")),
+                                        "detail": detail})
+                    if step.get("is_error") or step.get("status") in {"error", "timeout", "failed"}:
+                        errors.append({"line": index, "detail": detail or "tool reported an error"})
+                elif kind == "result":
+                    detail = redact(str(step.get("text") or "")[:1000])
+                    tails.append({"line": index, "type": "result", "detail": detail})
+                    if step.get("is_error"):
+                        errors.append({"line": index, "detail": detail or "agent reported an error"})
     # Error excerpts are not dropped by ordinary event sampling. Their full
     # source digest permits checking causes outside the compressed envelope.
     return {"tool_calls": tools[:max_events // 2] + tools[max(max_events // 2, len(tools) - max_events // 2):],

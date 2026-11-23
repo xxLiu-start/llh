@@ -53,20 +53,30 @@ class SkillSession:
                     "token_status": ("estimated" if count is not None else "unavailable") if text else "not_applicable",
                     "method": "same-model offline tokenizer; injected segment including wrapper", "included_in_role_input": True,
                     "no_match_or_tokenizer_unavailable": not bool(text)}
+                # Local adapters stream their raw JSONL to live_trajectory_path;
+                # Harbor-backed adapters may instead expose claude_stream_path
+                # in result metadata. Persist the path before awaiting so a
+                # killed/timed-out worker still leaves a recoverable partial trace.
+                stream_path = kwargs.get("live_trajectory_path")
+                if isinstance(stream_path, (str, Path)) and str(stream_path):
+                    injection["trajectory_path"] = str(Path(stream_path).expanduser().resolve(strict=False))
+                    injection["trajectory_status"] = "running"
                 session.injections.append(injection)
                 session.write()
                 try:
                     result = await adapter.run_episode(prompt + text, *args, **kwargs)
                     metadata = getattr(result, "metadata", {})
                     if isinstance(metadata, dict):
-                        stream_path = metadata.get("claude_stream_path")
-                        if isinstance(stream_path, str) and stream_path:
-                            injection["trajectory_path"] = stream_path
-                            injection["trajectory_status"] = getattr(result, "status", "unknown")
+                        metadata_path = metadata.get("claude_stream_path")
+                        if isinstance(metadata_path, str) and metadata_path:
+                            injection["trajectory_path"] = str(Path(metadata_path).expanduser().resolve(strict=False))
+                    if injection.get("trajectory_path"):
+                        injection["trajectory_status"] = getattr(result, "status", "unknown")
                     row.update(usage=from_trajectory(getattr(result, "actions_log", ""), metadata),
                                duration_ms=getattr(result,"duration_ms",0),status=result.status)
                     return result
                 except BaseException as exc:
+                    injection["trajectory_status"] = "cancelled" if type(exc).__name__ == "CancelledError" else "error"
                     row.update(status="cancelled" if type(exc).__name__=="CancelledError" else "error",
                                duration_ms=int((time.monotonic()-started)*1000))
                     raise
