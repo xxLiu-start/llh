@@ -17,7 +17,6 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
     if isinstance(ledgers, dict):
         ledgers = [ledgers]
     injected, malformed = {}, []
-    role_call_counts = {}
     selected_roles = set(roles) & set(ROLES)
     for ledger in ledgers:
         if not isinstance(ledger, dict):
@@ -26,7 +25,6 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             if not isinstance(call, dict) or call.get("role") not in selected_roles:
                 continue
             role = call["role"]
-            role_call_counts[role] = role_call_counts.get(role, 0) + 1
             keys, versions = call.get("skills") or [], call.get("versions") or []
             if len(keys) != len(versions):
                 malformed.append({"role": call.get("role"), "reason": "skill/version count mismatch"})
@@ -34,13 +32,14 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
                 if not isinstance(key, str) or type(version) is not int or version < 1:
                     malformed.append({"role": call.get("role"), "reason": "invalid skill identity"})
                     continue
-                item = injected.setdefault((key, version), {"role": role, "count": 0})
+                item = injected.setdefault((key, version), {"role": role, "count": 0, "trajectory_refs": []})
                 if item["role"] != role:
                     malformed.append({"role": role, "reason": "injected Skill role changed across calls"})
                     continue
                 item["count"] += 1
-    for record in injected.values():
-        record["role_call_count"] = role_call_counts.get(record["role"], 0)
+                trajectory_reference = call.get("trajectory_reference")
+                if isinstance(trajectory_reference, str) and trajectory_reference:
+                    item["trajectory_refs"].append(trajectory_reference)
     if not injected:
         return {"status": "not_applicable", "assessments": [], "injected_skill_count": 0,
                 "malformed_injections": malformed, "model_calls": 0}
@@ -53,9 +52,6 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             continue
         if skill.role != record["role"]:
             unavailable.append({"key": key, "version": version, "reason": "role mismatch"})
-        elif record["count"] != record["role_call_count"]:
-            unavailable.append({"key": key, "version": version,
-                                "reason": "Skill was not injected in every role episode; per-episode trace linkage is unavailable"})
         else:
             loaded.append((skill, record))
     loaded.sort(key=lambda pair: (-pair[1]["count"], pair[0].key, pair[0].version))
@@ -64,19 +60,23 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
     evidence = bundle.get("evidence", {})
     inputs, schemas = [], []
     for skill, record in loaded:
-        own_refs = [ref for ref, src in evidence.items()
-                    if src.get("role") == skill.role and
-                    (ref.startswith("trajectory:") or
-                     (ref.startswith("partial:") and ref.endswith(":trajectory")))]
+        own_refs = list(dict.fromkeys(record["trajectory_refs"]))
+        if len(own_refs) != record["count"]:
+            unavailable.append({"key": skill.key, "version": skill.version,
+                                "reason": "one or more injected episodes have no preserved trajectory reference"})
+            continue
+        if any(ref not in evidence or evidence[ref].get("role") != skill.role or
+               not (ref.startswith("trajectory:") or ref.startswith("partial:"))
+               for ref in own_refs):
+            unavailable.append({"key": skill.key, "version": skill.version,
+                                "reason": "injected episode trajectory reference is missing or has the wrong role"})
+            continue
         partial_refs = [ref for ref in own_refs if ref.startswith("partial:")]
         complete_refs = [ref for ref in own_refs if ref.startswith("trajectory:")]
         own_refs = partial_refs + complete_refs
-        if not own_refs:
-            unavailable.append({"key": skill.key, "version": skill.version, "reason": "missing role trajectory evidence"})
-            continue
-        if len(own_refs) < record["role_call_count"]:
+        if len(own_refs) > MAX_SOURCES_PER_SKILL:
             unavailable.append({"key": skill.key, "version": skill.version,
-                                "reason": "role trajectory evidence does not cover every injection call"})
+                                "reason": "injected episode count exceeds the adherence evidence budget"})
             continue
         allowed = {skill.role, "auditor", "benchmark"}
         if skill.role == "auditor":
@@ -108,14 +108,13 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             unavailable.append({"key": skill.key, "version": skill.version, "reason": "missing role trajectory evidence"})
             continue
         complete_own_trace = any(ref.startswith("trajectory:") for ref in own_refs)
-        partial_role_round = any(skill.role in row.get("roles", {}) for row in bundle.get("partial_rounds", []))
-        partial_execution = bool(partial_refs or partial_role_round or not complete_own_trace)
+        partial_execution = bool(partial_refs or not complete_own_trace)
         inputs.append({"key": skill.key, "version": str(skill.version), "role": skill.role, "modality": skill.modality,
             "injection_count": record["count"], "description": skill.description, "trigger": skill.trigger,
             "preconditions": skill.preconditions,
             "procedure": [{"id": f"step-{i+1}", "instruction": step} for i, step in enumerate(skill.procedure)],
             "verification": skill.verification, "pitfalls": skill.pitfalls, "generalization": skill.generalization,
-            "trajectory_evidence": [{"reference": ref, "text": evidence[ref]["text"][:6000]} for ref in own_refs[:6]],
+            "trajectory_evidence": [{"reference": ref, "text": evidence[ref]["text"][:6000]} for ref in own_refs],
             "outcome": bundle.get("outcome"), "agent_timeout": bundle.get("runtime", {}).get("agent_timeout", False),
             "partial_execution": partial_execution})
         ids = [f"step-{i+1}" for i in range(len(skill.procedure))]
@@ -141,10 +140,7 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
             raise ValueError("unknown or duplicate adherence Skill identity")
         seen.add(ident)
         skill, record = next((s, r) for s, r in loaded if s.key == item["key"] and str(s.version) == item["version"])
-        own_refs = [ref for ref, source in evidence.items()
-                    if source.get("role") == skill.role and
-                    (ref.startswith("trajectory:") or
-                     (ref.startswith("partial:") and ref.endswith(":trajectory")))]
+        own_refs = list(dict.fromkeys(record["trajectory_refs"]))
         ids = [f"step-{i+1}" for i in range(len(skill.procedure))]
         groups = {k: list(item[k]) for k in ("followed_steps", "skipped_steps", "not_applicable_steps", "unassessed_steps")}
         flat = [v for values in groups.values() for v in values]
@@ -154,15 +150,14 @@ def analyze_injected_skills(bundle, library, model, *, roles=ROLES):
         # Missing steps in an interrupted/partial-only trace are unknown, not
         # evidence that the agent skipped them.
         complete_own_trace = any(ref.startswith("trajectory:") for ref in own_refs)
-        partial_role_round = any(skill.role in row.get("roles", {}) for row in bundle.get("partial_rounds", []))
-        partial_execution = bool(partial_refs or partial_role_round or not complete_own_trace)
+        partial_execution = bool(partial_refs or not complete_own_trace)
         if partial_execution:
             groups["unassessed_steps"].extend(groups["skipped_steps"])
             groups["skipped_steps"] = []
         refs, quotes = [x["reference"] for x in item["evidence"]], [x["quote"] for x in item["evidence"]]
         checked = checked_evidence(bundle, refs, quotes) if refs else []
-        own = any(bundle["evidence"][e.reference]["role"] == skill.role and
-                   e.reference.startswith(("trajectory:", "partial:")) for e in checked)
+        own = any(e.reference in own_refs and bundle["evidence"][e.reference]["role"] == skill.role
+                  for e in checked)
         status = item["status"]
         if item["confidence"] < .65 or not own:
             status = "insufficient_evidence"
