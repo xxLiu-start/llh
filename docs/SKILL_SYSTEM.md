@@ -46,8 +46,9 @@ lh-harness skills learn --config experiments/skill_evolution/configs/all_roles.t
   --output experiments/skill_evolution/results/skill_enhanced/new-learning-batch
 ```
 
-默认等待 5 个独立任务后统一审核。最后不足一批时可用 `--flush`；单任务经验经 Curator 接纳后
-也可成为 Active Skill，不要求两个任务支持。当前所有候选、活跃项、历史、索引和统计存放于同一个 library 下。
+默认等待 5 个独立任务后统一审核。最后不足一批时可用 `--flush`。Curator 接纳代表内容审核通过；
+单任务经验进入 Candidate，只有至少两个不同独立任务身份支持后才成为 Active Skill。
+当前所有候选、活跃项、历史、索引和统计存放于同一个 library 下。
 
 ## 配置与权限
 
@@ -64,7 +65,7 @@ token_budget_per_role = "unlimited"
 enabled = true
 train_roles = ["executor"]
 batch_size = 5
-min_independent_tasks = 1
+min_independent_tasks = 2
 learn_from_success = true
 learn_from_failure = true
 
@@ -81,8 +82,8 @@ max_skills_per_role = "unlimited"
 `phase=test` 要求 library 已冻结。`phase=online` 的离线学习输出标记为
 `online_skill_learning`，不能作为冻结库主实验。验证阶段禁止更新。
 
-默认 `min_independent_tasks=1`：Curator 接纳即激活，不再对所有 Skill 强制要求两个独立任务。
-显式设置为 2 仍可复现旧实验策略。支持数和来源仍真实记录；单任务支持不能被表述为多任务验证。
+默认 `min_independent_tasks=2`：Curator 接纳只代表通过内容审核；至少两个独立任务身份支持后才能激活。
+同一任务的重复轮次、重试或随机种子不增加独立支持数。
 
 `"unlimited"` 表示无上限；省略上述三个限制字段时也默认无上限。Router 按 BM25 排序，
 注入当前角色、GUI/CLI 类型和 Trigger 都匹配的全部 Active Skill，不再截取前两条或卡在 400 Token。

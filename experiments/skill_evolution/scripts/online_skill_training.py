@@ -225,9 +225,9 @@ def resume_plan(args, roles):
         raise ValueError("--api-key-env 必须是已设置的环境变量名称，不能是密钥值")
     if Path(raw['skills']['library_dir']).expanduser().resolve() != output/'library':
         raise ValueError("原 Skill 库不在该运行目录内，拒绝隐式切换")
-    # The only configuration migration already requested by the user is the
-    # removal of the old two-task activation gate. Save the old file on apply.
-    text, count = re.subn(r'^min_independent_tasks\s*=.*$', 'min_independent_tasks = 1', text, flags=re.MULTILINE)
+    # Preserve the original config in the resume archive, then enforce the
+    # two-independent-task promotion gate for future updates.
+    text, count = re.subn(r'^min_independent_tasks\s*=.*$', 'min_independent_tasks = 2', text, flags=re.MULTILINE)
     if count != 1:
         raise ValueError("原激活策略配置不是唯一字段")
     config = tomllib.loads(text)
@@ -300,7 +300,7 @@ def prepare_resume(plan, infrastructure):
              'retained_library_sha256': library.digest(), 'retained_completed_tasks': len(manifest['tasks']),
              'superseded_task_attempts': len(superseded), 'infrastructure': infrastructure,
              'batching': 'remaining tasks regrouped from resume point using original batch size',
-             'activation_min_independent_tasks': 1}
+             'activation_min_independent_tasks': 2}
     manifest.setdefault('resumptions', []).append(event)
     manifest.update(status='preparing', infrastructure=infrastructure, final_evaluation_enabled=plan['final_eval'])
     (output/'config.toml').write_text(plan['config_text'])
@@ -506,7 +506,7 @@ def write_summary(plan, manifest):
     runtime, learning = combined(runtimes), combined(costs)
     categories = {role: combined([(row.get("runtime_usage") or {}).get("categories", {}).get(role, unavailable()) for row in attempts]) for role in ROLES}
     learning_categories = {stage: combined([(entry.get("cost") or {}).get("categories", {}).get(stage, unavailable())
-        for entry in attempted]) for stage in ("attribution", "proposer", "curator", "general_curator")}
+        for entry in attempted]) for stage in ("adherence", "attribution", "proposer", "curator", "general_curator")}
     injection_missing = bool(plan["roles"]) and any(row.get("skill_usage") is None for row in attempts)
     injections = [item for row in attempts for item in (row.get("skill_usage") or {}).get("injections", [])]
     injection_missing = injection_missing or any(item.get("skills") and item.get("tokens") is None for item in injections)

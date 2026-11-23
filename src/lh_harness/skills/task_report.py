@@ -210,6 +210,7 @@ def task_record(root, row, manifest, batches, library, train_roles):
             'injection_is_already_in_execution_input':True,
             'shared_curation_accounting':'共享 Batch 审核成本见 batches，仅记录一次，不虚构每题分摊'},
         'roles':roles,'learning_evidence_gate':bundle.get('learning_eligibility'),
+        'skill_adherence':bundle.get('skill_adherence'),
         'historical_audit_status':{key:bundle.get('auditor',{}).get(key) for key in ('status','integrity_status','contract_audit_status')},
         'sources':{'proposal':stage.get('proposal_path'),'reflection_report':stage.get('report_path'),
                    'curation_report':obj(row.get('learning')).get('report_path')}}

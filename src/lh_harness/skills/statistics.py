@@ -4,9 +4,9 @@ from ..token_usage import aggregate
 
 def summarize(records, *, prices=None, training_tokens=None, successful_tasks=0):
     categories = {role: aggregate([r["usage"] for r in records if r["role"] == role])
-                  for role in ("manager", "executor", "auditor", "auxiliary", "attribution", "proposer", "curator", "general_curator")}
+                  for role in ("manager", "executor", "auditor", "auxiliary", "adherence", "attribution", "proposer", "curator", "general_curator")}
     runtime = aggregate([r["usage"] for r in records if r["role"] in {"manager", "executor", "auditor", "auxiliary"}])
-    learning = aggregate([r["usage"] for r in records if r["role"] in {"attribution", "proposer", "curator", "general_curator"}])
+    learning = aggregate([r["usage"] for r in records if r["role"] in {"adherence", "attribution", "proposer", "curator", "general_curator"}])
     total = aggregate([r["usage"] for r in records])
     price = prices or {}
     cost = None
