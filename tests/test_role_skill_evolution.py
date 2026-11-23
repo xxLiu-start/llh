@@ -345,7 +345,7 @@ def test_split_manifest_overlap_and_experience_real_log_mapping(tmp_path):
     b=extract_run(run,task_id='task-a',dataset='fixture-v1')
     assert b['outcome']=='success' and b['runtime']['role_tokens']['executor']['status']=='reported'
     assert b['runtime']['role_tokens']['executor']['total_tokens']==5
-    assert len(b['evidence'])==5 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
+    assert len(b['evidence'])==6 and 'benchmark-result' in b['evidence'] and b['task_fingerprint']
     assert b['evidence']['trajectory:executor:0']['role']=='executor'
     assert 'inspect current state' in b['evidence']['trajectory:executor:0']['text']
     injection=b['skill_usage'][0]['injections'][0]
